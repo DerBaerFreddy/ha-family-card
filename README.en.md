@@ -32,7 +32,8 @@ A family calendar — a “who is where, when” board — for [Home Assistant](
 - **Fills the screen** – person columns grow with the card width (panel view / wide cards); with `full_height` the board reaches the bottom of the screen. Column width, axis width and spacing are configurable.
 - **Tentative events** – events whose title matches a `tentative_patterns` pattern are drawn dashed and slightly translucent (opt-in; the calendar status is deliberately not evaluated).
 - **Entity badges per person** – any entities (phone battery, sensors …) as small chips below the person header; a click opens the more-info dialog.
-- **To-dos per person** – open items from one or more `todo.*` lists are shown directly below the person header; clicking opens the respective list.
+- **To-dos per person** – open items from one or more `todo.*` lists are shown directly below the person header; tick them off via the checkbox or click to edit/delete.
+- **Shared calendars auto-deduplicated** – if the same `calendar.*` is assigned to multiple people, its events are rendered once as shared items instead of duplicated in every column.
 - **Kiosk mode** – optionally return to the start view and to “today” after X minutes of inactivity; larger touch targets on touch devices.
 - **Visual editor 2.0** – no YAML at all: first-run wizard, one-click profiles (🖥️ wall tablet / 📱 phone / 🧩 default), expandable topic groups with helper texts, palette picker per person **and per calendar** (incl. label), fine-tuning sliders (font size, corner radius, opacity) – fields only appear when the matching view is active.
 - **⚡ Zero-config start** – when added, the card detects all `person.*` entities and links matching calendars by name; you can re-run it any time via “✨ Detect automatically” in the editor.
@@ -78,7 +79,9 @@ show_now_line: true
 color_by: person      # person | location | calendar
 hour_height: 64       # pixels per hour (40–96), day view
 refresh_interval: 300 # seconds; 0 = off
-shared_calendar: calendar.family # optional: show once across all people
+shared_calendar:            # optional: one or more shared calendars
+  - calendar.family
+  - calendar.school
 persons:
   - name: Anna
     person: person.anna     # avatar (entity_picture) + live status
@@ -98,7 +101,7 @@ persons:
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `persons` | list | – | 1–10 people with `name`, `person`, `calendar` (string **or list**), optional `todo` (string **or list**), `color`, `badges` (entities as chips) and `hidden` (starts collapsed) |
-| `shared_calendar` | string | – | Optional shared `calendar.*` whose events are shown once as cross-person bars spanning all people |
+| `shared_calendar` | string/list | – | One or more shared `calendar.*` entries shown once across all people; the shared row also lists timed events with their time |
 | `hide_empty_persons` | boolean | `false` | Week view: hide people without events in that week |
 | `show_focus` | boolean | `false` | “Now / next” bar per person above the views |
 | `drag_drop` | boolean | `true` | Move / resize events in the day view by dragging (writable single events only) |

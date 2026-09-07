@@ -27,12 +27,15 @@ const EN: Dict = {
   add_event: "Add event",
   new_event: "New event",
   event: "Event",
+  todo: "To-do",
   edit_event: "Edit event",
+  edit_todo: "Edit to-do",
   close: "Close",
   field_title: "Title",
   field_all_day: "All-day",
   field_start: "Start",
   field_end: "End",
+  field_due: "Due",
   field_location: "Location",
   field_note: "Note",
   field_calendar: "Calendar",
@@ -58,6 +61,7 @@ const EN: Dict = {
   todo_item: "to-do",
   todo_items: "to-dos",
   todo_due: "Due:",
+  todo_complete: "Mark as done",
 };
 
 const DE: Dict = {
@@ -82,12 +86,15 @@ const DE: Dict = {
   add_event: "Termin hinzufügen",
   new_event: "Neuer Termin",
   event: "Termin",
+  todo: "To-do",
   edit_event: "Termin bearbeiten",
+  edit_todo: "To-do bearbeiten",
   close: "Schließen",
   field_title: "Titel",
   field_all_day: "Ganztägig",
   field_start: "Start",
   field_end: "Ende",
+  field_due: "Fällig",
   field_location: "Ort",
   field_note: "Notiz",
   field_calendar: "Kalender",
@@ -113,6 +120,7 @@ const DE: Dict = {
   todo_item: "To-do",
   todo_items: "To-dos",
   todo_due: "Fällig:",
+  todo_complete: "Als erledigt markieren",
 };
 
 const TABLE: Record<string, Dict> = { en: EN, de: DE };

@@ -55,7 +55,7 @@ const EN: Dict = {
   l_hidden: "Hidden on start",
   l_compact: "Compact layout",
   l_map_url: "Map link (template)",
-  l_shared_calendar: "Shared calendar",
+  l_shared_calendar: "Shared calendars",
 
   /* ---- helper texts ---------------------------------------------- */
   h_hide_patterns: "Text patterns, e.g. “Recess” – matches are hidden",
@@ -82,7 +82,7 @@ const EN: Dict = {
   h_compact: "Smaller fonts and tighter spacing in a single switch",
   h_map_url: "{location} is substituted, e.g. https://maps.apple.com/?q={location}",
   h_shared_calendar:
-    "Events from this calendar are shown once as cross-person bars instead of inside a single person column",
+    "Events from these calendars are shown once as cross-person bars instead of inside a single person column",
 
   /* ---- option labels --------------------------------------------- */
   o_person: "Person",
@@ -183,7 +183,7 @@ const DE: Dict = {
   l_hidden: "Beim Start ausgeblendet",
   l_compact: "Kompakte Darstellung",
   l_map_url: "Karten-Link (Vorlage)",
-  l_shared_calendar: "Gemeinsamer Kalender",
+  l_shared_calendar: "Gemeinsame Kalender",
 
   h_hide_patterns: "Textmuster, z. B. „Hofpause“ – Treffer werden ausgeblendet",
   h_show_patterns: "Allow-Liste: nur Termine, deren Titel eines der Muster enthält",
@@ -209,7 +209,7 @@ const DE: Dict = {
   h_compact: "Kleinere Schriften und engere Abstände in einem Schalter",
   h_map_url: "{location} wird ersetzt, z. B. https://maps.apple.com/?q={location}",
   h_shared_calendar:
-    "Termine aus diesem Kalender werden einmal als Querbalken über alle Personen dargestellt statt in nur einer Spalte",
+    "Termine aus diesen Kalendern werden einmal als Querbalken über alle Personen dargestellt statt in nur einer Spalte",
 
   o_person: "Person",
   o_location: "Ort",

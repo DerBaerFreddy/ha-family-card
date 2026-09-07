@@ -99,7 +99,12 @@ export class FamilyBoardCardEditor extends LitElement implements LovelaceCardEdi
   }
 
   private get _settingsData() {
-    return { ...this._config, time_grid: String(this._config.time_grid ?? 30) };
+    const shared_calendar = Array.isArray(this._config.shared_calendar)
+      ? this._config.shared_calendar
+      : this._config.shared_calendar
+        ? [this._config.shared_calendar]
+        : [];
+    return { ...this._config, time_grid: String(this._config.time_grid ?? 30), shared_calendar };
   }
 
   /** Grouped settings schema; irrelevant fields are hidden contextually. */
@@ -173,7 +178,7 @@ export class FamilyBoardCardEditor extends LitElement implements LovelaceCardEdi
       { name: "title", selector: { text: {} } },
       {
         name: "shared_calendar",
-        selector: { entity: { filter: { domain: "calendar" } } },
+        selector: { entity: { filter: { domain: "calendar" }, multiple: true } },
       },
       group(this._t("g_views"), "mdi:calendar-multiselect", [
         {
@@ -273,6 +278,10 @@ export class FamilyBoardCardEditor extends LitElement implements LovelaceCardEdi
     ev.stopPropagation();
     const next = { ...ev.detail.value };
     if (typeof next.time_grid === "string") next.time_grid = Number(next.time_grid);
+    if (Array.isArray(next.shared_calendar)) {
+      if (next.shared_calendar.length === 0) delete next.shared_calendar;
+      else if (next.shared_calendar.length === 1) next.shared_calendar = next.shared_calendar[0];
+    }
     // keep persons + calendars untouched by the settings form
     this._emit({
       ...this._config,
@@ -393,8 +402,12 @@ export class FamilyBoardCardEditor extends LitElement implements LovelaceCardEdi
       const cals = Array.isArray(p.calendar) ? p.calendar : p.calendar ? [p.calendar] : [];
       for (const c of cals) if (c && !all.includes(c)) all.push(c);
     }
-    const shared = this._config.shared_calendar;
-    if (shared && !all.includes(shared)) all.push(shared);
+    const shared = Array.isArray(this._config.shared_calendar)
+      ? this._config.shared_calendar
+      : this._config.shared_calendar
+        ? [this._config.shared_calendar]
+        : [];
+    for (const c of shared) if (c && !all.includes(c)) all.push(c);
     return all;
   }
 
