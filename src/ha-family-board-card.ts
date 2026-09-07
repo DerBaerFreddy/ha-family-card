@@ -36,6 +36,7 @@ interface PersonConfig {
   name?: string;
   person?: string; // person.* entity -> avatar (entity_picture) + live status
   calendar?: string | string[]; // calendar.* entity/entities -> events
+  todo?: string | string[]; // todo.* list/lists shown under the person header
   color?: string; // optional override; default falls back to a palette
   badges?: string[]; // extra entities shown as chips under the person header
   hidden?: boolean; // start collapsed (person toggle can bring them back)
@@ -43,6 +44,7 @@ interface PersonConfig {
 
 export interface FamilyBoardConfig extends LovelaceCardConfig {
   persons: PersonConfig[];
+  shared_calendar?: string; // optional calendar shown once across all person columns
   title?: string;
   view?: ViewName;
   views?: ViewName[]; // which views appear in the toggle. default: all
@@ -96,6 +98,21 @@ interface Overflow {
   startMin: number;
   endMin: number;
   count: number;
+}
+
+type TodoStatus = "needs_action" | "completed";
+
+interface TodoItem {
+  uid?: string;
+  summary: string;
+  status: TodoStatus;
+  due?: string;
+  description?: string;
+}
+
+interface PersonTodoItem extends TodoItem {
+  entityId: string;
+  listLabel: string;
 }
 
 /** State of the create/edit dialog. */
@@ -162,6 +179,7 @@ const WEATHER_ICON: Record<string, string> = {
 const FEAT_CREATE = 1;
 const FEAT_DELETE = 2;
 const FEAT_UPDATE = 4;
+const SHARED_PERSON_IDX = -1;
 
 /** Built-in keyword -> emoji map for auto_icons (DE + EN). First match wins. */
 const ICON_MAP: Array<[RegExp, string]> = [
@@ -279,6 +297,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
   @state() private _dialog?: DialogState;
   @state() private _loadError = false;
   @state() private _loading = false;
+  @state() private _todos: Record<number, PersonTodoItem[]> = {};
   @state() private _fitPx = 0;
   @state() private _hiddenP: number[] = []; // temporarily hidden persons (header click) // measured px/min when fit_height is on (0 = not measured)
   @state() private _drag?: {
@@ -499,6 +518,18 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
     this._maybeScrollToNow();
   }
 
+  /** Keep sticky row offsets in sync so shared/all-day rows stay visible below the header. */
+  private _syncStickyRows(): void {
+    const board = this.renderRoot?.querySelector(".board") as HTMLElement | null;
+    if (!board) return;
+    const header = board.querySelector(".header-row") as HTMLElement | null;
+    const shared = board.querySelector(".shared-row") as HTMLElement | null;
+    const headerH = header?.offsetHeight ?? 0;
+    const sharedH = shared?.offsetHeight ?? 0;
+    board.style.setProperty("--fb-sticky-header-h", `${headerH}px`);
+    board.style.setProperty("--fb-sticky-shared-h", `${sharedH}px`);
+  }
+
   /**
    * When `fit_height` is on, shrink the day grid so the whole start..end range
    * fits inside the board without scrolling. Only ever scales DOWN from the
@@ -506,6 +537,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
    */
   private _measureFit(): void {
     this._applyFullHeight();
+    this._syncStickyRows();
     if (!this._config?.fit_height || this._view !== "day") {
       if (this._fitPx !== 0) this._fitPx = 0;
       return;
@@ -513,12 +545,13 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
     const board = this.renderRoot?.querySelector(".board") as HTMLElement | null;
     if (!board) return;
     const header = board.querySelector(".header-row") as HTMLElement | null;
+    const shared = board.querySelector(".shared-row") as HTMLElement | null;
     const allday = board.querySelector(".allday-row") as HTMLElement | null;
     const day = this._visibleDays.includes(this._day) ? this._day : this._visibleDays[0];
     const win = this._dayWindow(day);
     const span = win.endMin - win.startMin;
     if (span <= 0) return;
-    const chrome = (header?.offsetHeight ?? 0) + (allday?.offsetHeight ?? 0);
+    const chrome = (header?.offsetHeight ?? 0) + (shared?.offsetHeight ?? 0) + (allday?.offsetHeight ?? 0);
     const avail = board.clientHeight - chrome - 2;
     if (avail <= 0) return;
     const configuredPx =
@@ -622,11 +655,20 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
 
   private async _maybeFetch(): Promise<void> {
     const cals = this._config.persons.map((p) => this._calsOf(p).join("+")).join(",");
+    const shared = this._sharedCal() ?? "";
+    const todos = this._config.persons.map((p) => this._todosOf(p).join("+")).join(",");
+    const todoState = this._config.persons
+      .flatMap((p) => this._todosOf(p))
+      .map((id) => {
+        const st = this.hass.states[id];
+        return `${id}:${st?.state ?? ""}:${st?.last_updated ?? ""}`;
+      })
+      .join(",");
     const scope = this._view === "month" ? `m${this._monthOffset}` : `w${this._weekOffset}`;
-    const key = `${scope}|${cals}`;
+    const key = `${scope}|${cals}|${shared}|${todos}|${todoState}`;
     if (key === this._fetchedKey) return;
     this._fetchedKey = key;
-    await this._fetchEvents();
+    await Promise.all([this._fetchEvents(), this._fetchTodos()]);
   }
 
   /** Force a refresh on next update (e.g. after a mutation or timer). */
@@ -738,39 +780,54 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
     let anyError = false;
     this._loading = true;
 
-    await Promise.all(
-      this._config.persons.flatMap((p, idx) => {
-        const color = personColor(p, idx);
-        return this._calsOf(p)
-          .filter((cal) => this.hass.states[cal])
-          .map(async (cal) => {
-            try {
-              const events = await this.hass.callApi<any[]>(
-                "GET",
-                `calendars/${cal}?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`,
-              );
-              for (const ev of events) {
-                const raw = parseRawEvent(ev, idx, cal, color);
-                if (raw) {
-                  // optional per-calendar override: take the title from another
-                  // field (school feeds often hide the subject in `description`)
-                  const tf = this._calMeta(cal).title_field;
-                  if (tf) {
-                    const alt = (ev as Record<string, unknown>)[tf];
-                    if (typeof alt === "string" && alt.trim()) raw.summary = alt.trim();
-                  }
-                }
-                if (raw && !this._hidden(raw.summary) && this._allowed(raw.summary)) {
-                  if (this._matchesTentative(raw.summary)) raw.tentative = true;
-                  raw.summary = this._cleanTitle(raw.summary);
-                  raws.push(raw);
-                }
-              }
-            } catch (err) {
-              anyError = true;
+    const fetchCalendar = async (
+      cal: string,
+      idx: number,
+      color: string,
+      shared: boolean = false,
+    ): Promise<void> => {
+      try {
+        const events = await this.hass.callApi<any[]>(
+          "GET",
+          `calendars/${cal}?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`,
+        );
+        for (const ev of events) {
+          const raw = parseRawEvent(ev, idx, cal, color, shared);
+          if (raw) {
+            // optional per-calendar override: take the title from another
+            // field (school feeds often hide the subject in `description`)
+            const tf = this._calMeta(cal).title_field;
+            if (tf) {
+              const alt = (ev as Record<string, unknown>)[tf];
+              if (typeof alt === "string" && alt.trim()) raw.summary = alt.trim();
             }
-          });
-      }),
+          }
+          if (raw && !this._hidden(raw.summary) && this._allowed(raw.summary)) {
+            if (this._matchesTentative(raw.summary)) raw.tentative = true;
+            raw.summary = this._cleanTitle(raw.summary);
+            raws.push(raw);
+          }
+        }
+      } catch (_err) {
+        anyError = true;
+      }
+    };
+
+    await Promise.all(
+      [
+        ...this._config.persons.flatMap((p, idx) => {
+          const color = personColor(p, idx);
+          return this._calsOf(p)
+            .filter((cal) => this.hass.states[cal])
+            .map((cal) => fetchCalendar(cal, idx, color));
+        }),
+        ...(() => {
+          const cal = this._sharedCal();
+          if (!cal || !this.hass.states[cal]) return [];
+          const color = this._calMeta(cal).color ?? "var(--fb-accent)";
+          return [fetchCalendar(cal, SHARED_PERSON_IDX, color, true)];
+        })(),
+      ],
     );
     let cleaned = raws;
     if (this._config.filter_duplicates) {
@@ -792,11 +849,61 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
     this._loading = false;
   }
 
+  private async _fetchTodos(): Promise<void> {
+    const ids = Array.from(new Set(this._config.persons.flatMap((p) => this._todosOf(p))));
+    if (ids.length === 0) {
+      if (Object.keys(this._todos).length) this._todos = {};
+      return;
+    }
+    try {
+      const res: any = await this.hass.callWS({
+        type: "execute_script",
+        sequence: [
+          {
+            action: "todo.get_items",
+            target: { entity_id: ids },
+            data: { status: ["needs_action"] },
+            response_variable: "fb_todos",
+          },
+          { stop: "", response_variable: "fb_todos" },
+        ],
+      });
+      const payload = ((res as { response?: unknown }).response ?? res) as Record<
+        string,
+        { items?: TodoItem[] } | undefined
+      >;
+      const byPerson: Record<number, PersonTodoItem[]> = {};
+      this._config.persons.forEach((p, idx) => {
+        byPerson[idx] = this._todosOf(p)
+          .flatMap((id) => {
+            const items = payload?.[id]?.items;
+            if (!Array.isArray(items)) return [];
+            return items
+              .filter((item) => item?.status !== "completed" && typeof item?.summary === "string")
+              .map((item) => ({
+                ...item,
+                entityId: id,
+                listLabel: this._todoLabel(id),
+              }));
+          })
+          .sort((a, b) => this._todoSortKey(a) - this._todoSortKey(b) || a.summary.localeCompare(b.summary));
+      });
+      this._todos = byPerson;
+    } catch (_err) {
+      if (Object.keys(this._todos).length) this._todos = {};
+    }
+  }
+
   /* ---- capabilities -------------------------------------------- */
   /** A person's calendars, normalized to a (possibly empty) array. */
   private _calsOf(p: PersonConfig): string[] {
     if (Array.isArray(p.calendar)) return p.calendar.filter(Boolean);
     return p.calendar ? [p.calendar] : [];
+  }
+  /** A person's todo lists, normalized to a (possibly empty) array. */
+  private _todosOf(p: PersonConfig): string[] {
+    if (Array.isArray(p.todo)) return p.todo.filter(Boolean);
+    return p.todo ? [p.todo] : [];
   }
   /** Calendars of a person that allow creating events. */
   private _writableCals(p: PersonConfig): string[] {
@@ -819,6 +926,16 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
   }
   private _canDelete(entity?: string) {
     return (this._calFeatures(entity) & FEAT_DELETE) !== 0;
+  }
+  private _sharedCal(): string | undefined {
+    return this._config.shared_calendar || undefined;
+  }
+  private _isShared(entry: { personIdx: number; shared?: boolean }): boolean {
+    return entry.shared === true || entry.personIdx === SHARED_PERSON_IDX;
+  }
+  private _sharedLabel(): string {
+    const cal = this._sharedCal();
+    return cal ? this._calLabel(cal) : this._t("shared_events");
   }
 
   /* ---- helpers ------------------------------------------------- */
@@ -936,6 +1053,27 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
   /** Whether an event has already ended (for dimming). */
   private _isPast(e: BoardEvent): boolean {
     return this._config.dim_past !== false && e.ref.end.getTime() <= Date.now();
+  }
+  private _sharedFor(day: number): BoardEvent[] {
+    return this._events
+      .filter((e) => e.day === day && this._isShared(e))
+      .sort((a, b) => Number(b.allDay) - Number(a.allDay) || a.startMin - b.startMin);
+  }
+  private _sharedAllDay(day: number): BoardEvent[] {
+    return this._sharedFor(day).filter((e) => e.allDay);
+  }
+  private _sharedTimed(day: number): LaidOutEvent[] {
+    return layoutDayColumns(this._sharedFor(day).filter((e) => !e.allDay));
+  }
+  private _sharedBandBox(e: LaidOutEvent, px: number, startMin: number): { top: number; height: number } {
+    const baseTop = (e.startMin - startMin) * px;
+    const baseHeight = Math.max((e.endMin - e.startMin) * px - 3, 12);
+    if (e.cols <= 1) return { top: baseTop, height: baseHeight };
+    const inset = Math.min(8, Math.max(3, Math.floor(baseHeight / Math.max(e.cols * 3, 3))));
+    return {
+      top: baseTop + e.col * inset,
+      height: Math.max(12, baseHeight - (e.cols - 1) * inset),
+    };
   }
   /** Localized "Today"/"Tomorrow"/"Yesterday" for a date, else null. */
   private _relativeDay(date: Date): string | null {
@@ -1100,12 +1238,85 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
     }
   }
   private _dayHasEvents(day: number): boolean {
-    return this._persons.some((_, i) => this._eventsFor(day, i).length > 0);
+    return this._sharedFor(day).length > 0 || this._persons.some((_, i) => this._eventsFor(day, i).length > 0);
+  }
+  private _eventOwnerLabel(e: BoardEvent): string {
+    return this._isShared(e)
+      ? this._sharedLabel()
+      : this._personName(this._persons[e.personIdx], e.personIdx);
   }
   private _personName(p: PersonConfig, idx: number): string {
     return (
       p.name || this.hass.states[p.person ?? ""]?.attributes?.friendly_name || `Person ${idx + 1}`
     );
+  }
+  private _todoLabel(entityId: string): string {
+    return (
+      (this.hass.states[entityId]?.attributes?.friendly_name as string | undefined) ?? entityId
+    );
+  }
+  private _todoSortKey(item: TodoItem): number {
+    if (!item.due) return Number.MAX_SAFE_INTEGER;
+    const due = Date.parse(item.due);
+    return Number.isFinite(due) ? due : Number.MAX_SAFE_INTEGER;
+  }
+  private _formatTodoDue(due?: string): string {
+    if (!due) return "";
+    const parsed = new Date(due.includes("T") ? due : `${due}T00:00:00`);
+    if (isNaN(parsed.getTime())) return due;
+    const locale = this.hass.locale?.language || "en";
+    const withTime = due.includes("T");
+    return new Intl.DateTimeFormat(locale, {
+      day: "numeric",
+      month: "short",
+      ...(withTime ? { hour: "numeric", minute: "2-digit" } : {}),
+    }).format(parsed);
+  }
+  private _todoTitle(item: PersonTodoItem): string {
+    const extra = [
+      item.listLabel,
+      item.due ? `${this._t("todo_due")} ${this._formatTodoDue(item.due)}` : "",
+      item.description ?? "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+    return extra ? `${item.summary}\n${extra}` : item.summary;
+  }
+  private _todoSummary(items: PersonTodoItem[]): string {
+    if (items.length === 0) return "";
+    return items.length === 1 ? `1 ${this._t("todo_item")}` : `${items.length} ${this._t("todo_items")}`;
+  }
+  private _todoChips(idx: number, compact: boolean = false) {
+    const items = this._todos[idx] ?? [];
+    if (items.length === 0) return nothing;
+    const visible = items.slice(0, compact ? 2 : 3);
+    const more = items.length - visible.length;
+    return html`<div class="ptodos ${compact ? "compact" : ""}">
+      ${visible.map(
+        (item) => html`<span
+          class="ptodo"
+          title=${this._todoTitle(item)}
+          role="button"
+          tabindex="0"
+          @click=${(ev: MouseEvent) => {
+            ev.stopPropagation();
+            this._moreInfo(item.entityId);
+          }}
+          @keydown=${(k: KeyboardEvent) => {
+            if (k.key === "Enter" || k.key === " ") {
+              k.preventDefault();
+              k.stopPropagation();
+              this._moreInfo(item.entityId);
+            }
+          }}
+        >
+          ${item.summary}
+        </span>`,
+      )}
+      ${more > 0
+        ? html`<span class="ptodo more" title=${this._todoSummary(items)}>+${more}</span>`
+        : nothing}
+    </div>`;
   }
   private _avatar(p: PersonConfig, idx: number) {
     const color = personColor(p, idx);
@@ -1320,6 +1531,8 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
     const { startMin, endMin } = this._dayWindow(day);
     const height = (endMin - startMin) * px;
     const full = weekdayNames(this.hass, "long", this._firstDayJs);
+    const sharedAllDay = this._sharedAllDay(day);
+    const sharedTimed = this._sharedTimed(day);
 
     const hours: number[] = [];
     for (let h = startMin / 60; h <= endMin / 60; h++) hours.push(h);
@@ -1327,7 +1540,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
     const now = new Date();
     const nowMin = Math.max(startMin, Math.min(endMin, now.getHours() * 60 + now.getMinutes()));
     const showNow = this._config.show_now_line !== false && this._isRealToday(day);
-    const hasAllDay = this._persons.some((_, i) => this._allDayFor(day, i).length > 0);
+    const hasAllDay = sharedAllDay.length > 0 || this._persons.some((_, i) => this._allDayFor(day, i).length > 0);
 
     return html`
       <div class="dayhead">
@@ -1342,6 +1555,36 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
       ${this._renderDayTabs()}
       ${this._loadError ? html`<div class="banner">${this._t("load_error")}</div>` : nothing}
       <div class="board">
+        ${sharedAllDay.length
+          ? html`
+              <div class="shared-row">
+                <div class="axis-spacer shared-axis">${this._sharedLabel()}</div>
+                <div class="shared-cell">
+                  ${sharedAllDay.map((e) => {
+                    const c = this._eventColor(e);
+                    const tent = this._isTentative(e);
+                    return html`
+                      <div
+                        class="shared-chip ${tent ? "tentative" : ""}"
+                        style="border-left:3px ${tent
+                          ? "dashed"
+                          : "solid"} ${c};background:${c}24;background:color-mix(in srgb, ${c} 18%, var(--card-background-color, #fff))"
+                        title="${this._evTitle(e)}"
+                        tabindex="0"
+                        role="button"
+                        @click=${() => this._openEvent(e)}
+                        @keydown=${(k: KeyboardEvent) => this._onItemKey(k, e)}
+                      >
+                        ${e.continuesBefore ? "« " : ""}${this._evTitle(e)}${e.continuesAfter
+                          ? " »"
+                          : ""}
+                      </div>
+                    `;
+                  })}
+                </div>
+              </div>
+            `
+          : nothing}
         <div class="header-row">
           <div class="axis-spacer"></div>
           ${this._persons.map((p, i) => {
@@ -1368,7 +1611,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                       <div class="pstatus">
                         ${stateObj ? this._statusLabel(stateObj.state) : ""}
                       </div>
-                      ${this._badges(p)}`}
+                      ${this._todoChips(i)} ${this._badges(p)}`}
               </div>
             `;
           })}
@@ -1598,6 +1841,48 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
               </div>
             `;
           })}
+          ${sharedTimed
+            .filter((e) => e.endMin > startMin && e.startMin < endMin)
+            .map((e) => {
+              const { top, height: bandHeight } = this._sharedBandBox(e, px, startMin);
+              const c = this._eventColor(e);
+              const tent = this._isTentative(e);
+              return html`
+                <div
+                  class="shared-band ${this._isPast(e) ? "past" : ""} ${tent ? "tentative" : ""}"
+                  tabindex="0"
+                  role="button"
+                  @click=${(ev: MouseEvent) => {
+                    ev.stopPropagation();
+                    this._openEvent(e);
+                  }}
+                  @keydown=${(k: KeyboardEvent) => this._onItemKey(k, e)}
+                  style="top:${top + 1.5}px;height:${bandHeight}px;
+                         border-left:3px ${tent ? "dashed" : "solid"} ${c};
+                         background:${c}1f;
+                         background:color-mix(in srgb, ${c} 14%, var(--card-background-color, #fff))"
+                  title="${this._evTitle(e)} · ${formatMinutes(this.hass, e.startMin)}–${formatMinutes(
+                    this.hass,
+                    e.endMin,
+                  )}"
+                >
+                  <span class="shared-tag">${this._sharedLabel()}</span>
+                  <span class="etitle"
+                    >${e.continuesBefore ? "« " : ""}${this._calIconEl(e)}${this._evTitle(e)}${e.continuesAfter
+                      ? " »"
+                      : ""}</span
+                  >
+                  ${bandHeight > 24
+                    ? html`<span class="etime"
+                        >${formatMinutes(this.hass, e.startMin)}–${formatMinutes(
+                          this.hass,
+                          e.endMin,
+                        )}</span
+                      >`
+                    : nothing}
+                </div>
+              `;
+            })}
           ${showNow
             ? html`<div class="nowline" style="top:${(nowMin - startMin) * px}px">
                 <span>${formatMinutes(this.hass, nowMin)}</span>
@@ -1619,6 +1904,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
     const px = hourPx / 60;
     const width = (endMin - startMin) * px;
     const full = weekdayNames(this.hass, "long", this._firstDayJs);
+    const shared = this._sharedTimed(day);
     const hours: number[] = [];
     for (let h = startMin / 60; h <= endMin / 60; h++) hours.push(h);
     const now = new Date();
@@ -1655,6 +1941,64 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
               )}
             </div>
           </div>
+          ${shared.length
+            ? html`
+                <div class="tlrow shared">
+                  <div class="tlperson shared">
+                    <div>
+                      <div class="pname">${this._sharedLabel()}</div>
+                    </div>
+                  </div>
+                  <div
+                    class="tlcanvas shared"
+                    style="width:${width}px;height:${Math.max(...shared.map((e) => e.cols)) * LANE + 8}px;
+                           background-image:repeating-linear-gradient(90deg, var(--fb-hourline) 0 1px, transparent 1px ${hourPx}px),
+                           repeating-linear-gradient(90deg, var(--fb-halfhour) 0 1px, transparent 1px ${hourPx / 2}px)"
+                  >
+                    ${shared
+                      .filter((e) => e.endMin > startMin && e.startMin < endMin)
+                      .map((e) => {
+                        const s = Math.max(e.startMin, startMin);
+                        const en = Math.min(e.endMin, endMin);
+                        const w = Math.max((en - s) * px - 3, 20);
+                        const c = this._eventColor(e);
+                        const tent = this._isTentative(e);
+                        const before = e.continuesBefore || e.startMin < startMin;
+                        const after = e.continuesAfter || e.endMin > endMin;
+                        return html`
+                          <div
+                            class="tlbar shared ${this._isPast(e) ? "past" : ""} ${tent
+                              ? "tentative"
+                              : ""}"
+                            tabindex="0"
+                            role="button"
+                            @click=${(ev: MouseEvent) => {
+                              ev.stopPropagation();
+                              this._openEvent(e);
+                            }}
+                            @keydown=${(k: KeyboardEvent) => this._onItemKey(k, e)}
+                            style="left:${(s - startMin) * px + 1.5}px;width:${w}px;
+                                   top:${e.col * LANE + 4}px;height:${LANE - 6}px;
+                                   border-left:3px ${tent ? "dashed" : "solid"} ${c};
+                                   background:${c}28;
+                                   background:color-mix(in srgb, ${c} 18%, var(--card-background-color, #fff))"
+                            title="${this._evTitle(e)}${e.allDay
+                              ? ` · ${this._t("all_day")}`
+                              : ` · ${formatMinutes(this.hass, e.startMin)}–${formatMinutes(this.hass, e.endMin)}`}"
+                          >
+                            <span class="shared-tag">${this._sharedLabel()}</span>
+                            <span class="etitle"
+                              >${before ? "« " : ""}${this._calIconEl(e)}${this._evTitle(e)}${after
+                                ? " »"
+                                : ""}</span
+                            >
+                          </div>
+                        `;
+                      })}
+                  </div>
+                </div>
+              `
+            : nothing}
           ${this._persons.map((p, i) => {
             const off = this._isOff(i);
             const evs = off ? [] : this._events.filter((e) => e.day === day && e.personIdx === i);
@@ -1677,9 +2021,10 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                   }}
                 >
                   ${this._avatar(p, i)}
-                  <div>
+                  <div class="pmeta">
                     <div class="pname">${this._personName(p, i)}</div>
                     <div class="pstatus">${stateObj ? this._statusLabel(stateObj.state) : ""}</div>
+                    ${this._todoChips(i, true)}
                   </div>
                 </div>
                 <div
@@ -1803,67 +2148,115 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                 }}
               >
                 ${this._avatar(p, i)}<span>${this._personName(p, i)}</span>
+                ${this._todoChips(i, true)}
               </div>`,
           )}
           ${this._visibleDays.map(
-            (d) => html`
-              <div
-                class="wday ${this._isRealToday(d) ? "today" : ""}"
-                role="button"
-                tabindex="0"
-                title=${this._t("day")}
-                @click=${() => this._openDayView(d)}
-                @keydown=${(k: KeyboardEvent) => {
-                  if (k.key === "Enter" || k.key === " ") {
-                    k.preventDefault();
-                    this._openDayView(d);
-                  }
-                }}
-              >
-                <b>${short[d]}</b>
-              </div>
-              ${shown.map(({ p, i }) => {
-                const canCreate = this._personCanCreate(p);
-                return html`
-                  <div
-                    class="wcell ${this._isRealToday(d) ? "today" : ""} ${canCreate
-                      ? "creatable"
-                      : ""}"
-                    @click=${() => canCreate && this._openCreate(i, d)}
-                  >
-                    ${this._eventsFor(d, i).map((e) => {
-                      const c = this._eventColor(e);
-                      const tent = this._isTentative(e);
-                      return html`
-                        <div
-                          class="wchip ${this._isPast(e) ? "past" : ""} ${tent ? "tentative" : ""}"
-                          style="border-left:2.5px ${tent
-                            ? "dashed"
-                            : "solid"} ${c};background:${c}30;background:color-mix(in srgb, ${c} 22%, var(--card-background-color, #fff))"
-                          title="${this._evTitle(e)}"
-                          tabindex="0"
-                          role="button"
-                          @click=${(ev: MouseEvent) => {
-                            ev.stopPropagation();
-                            this._openEvent(e);
-                          }}
-                          @keydown=${(k: KeyboardEvent) => this._onItemKey(k, e)}
-                        >
-                          <span
-                            >${this._calIconEl(e)}${e.continuesBefore ? "« " : ""}${this._evTitle(
-                              e,
-                            )}</span
+            (d) => {
+              const shared = this._sharedFor(d);
+              return html`
+                <div
+                  class="wday ${this._isRealToday(d) ? "today" : ""}"
+                  role="button"
+                  tabindex="0"
+                  title=${this._t("day")}
+                  @click=${() => this._openDayView(d)}
+                  @keydown=${(k: KeyboardEvent) => {
+                    if (k.key === "Enter" || k.key === " ") {
+                      k.preventDefault();
+                      this._openDayView(d);
+                    }
+                  }}
+                >
+                  <b>${short[d]}</b>
+                </div>
+                ${shared.length
+                  ? html`
+                      <div class="wshared ${this._isRealToday(d) ? "today" : ""}">
+                        ${shared.map((e) => {
+                          const c = this._eventColor(e);
+                          const tent = this._isTentative(e);
+                          return html`
+                            <div
+                              class="wshared-chip ${this._isPast(e) ? "past" : ""} ${tent
+                                ? "tentative"
+                                : ""}"
+                              style="border-left:2.5px ${tent
+                                ? "dashed"
+                                : "solid"} ${c};background:${c}28;background:color-mix(in srgb, ${c} 18%, var(--card-background-color, #fff))"
+                              title="${this._evTitle(e)}"
+                              tabindex="0"
+                              role="button"
+                              @click=${(ev: MouseEvent) => {
+                                ev.stopPropagation();
+                                this._openEvent(e);
+                              }}
+                              @keydown=${(k: KeyboardEvent) => this._onItemKey(k, e)}
+                            >
+                              <span class="shared-tag">${this._sharedLabel()}</span>
+                              <span
+                                >${this._calIconEl(e)}${e.continuesBefore ? "« " : ""}${this._evTitle(
+                                  e,
+                                )}${e.continuesAfter ? " »" : ""}</span
+                              >
+                              ${!e.allDay
+                                ? html`<small
+                                    >${formatMinutes(this.hass, e.startMin)}–${formatMinutes(
+                                      this.hass,
+                                      e.endMin,
+                                    )}</small
+                                  >`
+                                : html`<small>${this._t("all_day")}</small>`}
+                            </div>
+                          `;
+                        })}
+                      </div>
+                      <div class="wspacer ${this._isRealToday(d) ? "today" : ""}"></div>
+                    `
+                  : nothing}
+                ${shown.map(({ p, i }) => {
+                  const canCreate = this._personCanCreate(p);
+                  return html`
+                    <div
+                      class="wcell ${this._isRealToday(d) ? "today" : ""} ${canCreate
+                        ? "creatable"
+                        : ""}"
+                      @click=${() => canCreate && this._openCreate(i, d)}
+                    >
+                      ${this._eventsFor(d, i).map((e) => {
+                        const c = this._eventColor(e);
+                        const tent = this._isTentative(e);
+                        return html`
+                          <div
+                            class="wchip ${this._isPast(e) ? "past" : ""} ${tent ? "tentative" : ""}"
+                            style="border-left:2.5px ${tent
+                              ? "dashed"
+                              : "solid"} ${c};background:${c}30;background:color-mix(in srgb, ${c} 22%, var(--card-background-color, #fff))"
+                            title="${this._evTitle(e)}"
+                            tabindex="0"
+                            role="button"
+                            @click=${(ev: MouseEvent) => {
+                              ev.stopPropagation();
+                              this._openEvent(e);
+                            }}
+                            @keydown=${(k: KeyboardEvent) => this._onItemKey(k, e)}
                           >
-                          ${!e.allDay
-                            ? html`<small>${formatMinutes(this.hass, e.startMin)}</small>`
-                            : nothing}
-                        </div>
-                      `;
-                    })}
-                  </div>
-                `;
-              })}
-            `,
+                            <span
+                              >${this._calIconEl(e)}${e.continuesBefore ? "« " : ""}${this._evTitle(
+                                e,
+                              )}</span
+                            >
+                            ${!e.allDay
+                              ? html`<small>${formatMinutes(this.hass, e.startMin)}</small>`
+                              : nothing}
+                          </div>
+                        `;
+                      })}
+                    </div>
+                  `;
+                })}
+              `;
+            },
           )}
         </div>
       </div>
@@ -1923,7 +2316,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
 
   private _agendaRow(e: BoardEvent) {
     const c = this._eventColor(e);
-    const name = this._personName(this._persons[e.personIdx], e.personIdx);
+    const name = this._eventOwnerLabel(e);
     const time = e.allDay
       ? this._t("all_day")
       : `${formatMinutes(this.hass, e.startMin)}–${formatMinutes(this.hass, e.endMin)}`;
@@ -1935,7 +2328,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
       <div
         class="agenda-row ${this._isPast(e) ? "past" : ""} ${current ? "current" : ""} ${tent
           ? "tentative"
-          : ""}"
+          : ""} ${this._isShared(e) ? "shared" : ""}"
         tabindex="0"
         role="button"
         @click=${() => this._openEvent(e)}
@@ -2025,11 +2418,13 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                     const col = this._eventColor(e);
                     const tent = this._isTentative(e);
                     return html`<div
-                      class="mchip ${this._isPast(e) ? "past" : ""} ${tent ? "tentative" : ""}"
+                      class="mchip ${this._isPast(e) ? "past" : ""} ${tent ? "tentative" : ""} ${this._isShared(e)
+                        ? "shared"
+                        : ""}"
                       style="background:${col}30;background:color-mix(in srgb, ${col} 22%, var(--card-background-color, #fff));border-left:2px ${tent
                         ? "dashed"
                         : "solid"} ${col}"
-                      title="${this._evTitle(e)}"
+                      title="${this._eventOwnerLabel(e)} · ${this._evTitle(e)}"
                       @click=${(ev: MouseEvent) => {
                         ev.stopPropagation();
                         this._openEvent(e);
@@ -2747,7 +3142,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
       display: flex;
       position: sticky;
       top: 0;
-      z-index: 5;
+      z-index: 7;
       background: var(--card-background-color, var(--ha-card-background));
       border-bottom: 1px solid var(--divider-color);
     }
@@ -2773,6 +3168,49 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
       display: flex;
       border-bottom: 1px solid var(--divider-color);
       background: var(--card-background-color, var(--ha-card-background));
+      position: sticky;
+      top: calc(var(--fb-sticky-header-h, 0px) + var(--fb-sticky-shared-h, 0px));
+      z-index: 5;
+    }
+    .shared-row {
+      display: flex;
+      border-bottom: 1px solid var(--divider-color);
+      background: color-mix(in srgb, var(--fb-accent) 4%, var(--card-background-color, var(--ha-card-background)));
+      position: sticky;
+      top: var(--fb-sticky-header-h, 0px);
+      z-index: 6;
+    }
+    .shared-axis {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      padding-right: 8px;
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--secondary-text-color);
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .shared-cell {
+      flex: 1 1 auto;
+      min-width: 0;
+      padding: 4px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .shared-chip,
+    .shared-band {
+      border-radius: var(--fb-radius-sm);
+      cursor: pointer;
+    }
+    .shared-chip {
+      padding: 3px 8px;
+      font-size: var(--fb-chip-size);
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .allday-label {
       font-size: 10px;
@@ -2823,6 +3261,12 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
     .pstatus {
       font-size: 10.5px;
       color: var(--secondary-text-color);
+    }
+    .pmeta {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
     }
     .body {
       display: flex;
@@ -2969,6 +3413,30 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
     .event.overflow .etitle {
       font-weight: 700;
     }
+    .shared-band {
+      position: absolute;
+      left: calc(var(--fb-axis-width, 56px) + 2px);
+      right: 2px;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 8px;
+      overflow: hidden;
+      box-sizing: border-box;
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--divider-color) 35%, transparent);
+    }
+    .shared-tag {
+      flex: 0 0 auto;
+      font-size: 9.5px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      color: var(--secondary-text-color);
+      background: color-mix(in srgb, var(--card-background-color, #fff) 88%, transparent);
+      border-radius: 999px;
+      padding: 1px 7px;
+    }
     /* very short events (breaks etc.): thin single-line strip drawn on top so
        neighbours' min-height can't cover them */
     .event.slim {
@@ -3012,7 +3480,8 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
       cursor: pointer;
     }
     .tlrow.off .pname,
-    .tlrow.off .pstatus {
+    .tlrow.off .pstatus,
+    .tlrow.off .ptodos {
       opacity: 0.4;
     }
     .pbadges {
@@ -3021,6 +3490,35 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
       justify-content: center;
       gap: 3px;
       margin-top: 2px;
+    }
+    .ptodos {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 3px;
+      margin-top: 1px;
+    }
+    .ptodos.compact {
+      justify-content: flex-start;
+    }
+    .ptodo {
+      display: inline-flex;
+      align-items: center;
+      max-width: 100%;
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--primary-text-color);
+      background: color-mix(in srgb, var(--secondary-background-color) 82%, transparent);
+      border-radius: 999px;
+      padding: 1px 7px;
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .ptodo.more {
+      color: var(--secondary-text-color);
+      cursor: default;
     }
     .pbadge {
       display: inline-flex;
@@ -3294,6 +3792,9 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
       opacity: 0.72;
       border-style: dashed;
     }
+    .tlbar.shared {
+      z-index: 2;
+    }
     .tlbar .etime {
       flex: 0 0 auto;
     }
@@ -3356,6 +3857,9 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
     }
     .agenda-row:hover {
       background: var(--secondary-background-color);
+    }
+    .agenda-row.shared {
+      background: color-mix(in srgb, var(--fb-accent) 4%, transparent);
     }
     .agenda-time {
       flex: 0 0 92px;
@@ -3470,6 +3974,9 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+    .mchip.shared {
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fb-accent) 25%, transparent);
     }
     .mmore {
       font-size: 9.5px;
@@ -3608,6 +4115,30 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
     .wcell.creatable {
       cursor: copy;
     }
+    .wshared,
+    .wspacer {
+      border-left: 1px solid var(--divider-color);
+      border-bottom: 1px solid var(--divider-color);
+      background: color-mix(in srgb, var(--fb-accent) 4%, transparent);
+    }
+    .wshared {
+      grid-column: 2 / -1;
+      padding: 4px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .wspacer {
+      position: sticky;
+      left: 0;
+      z-index: 3;
+      background: var(--card-background-color, var(--ha-card-background));
+      border-right: 1px solid var(--divider-color);
+    }
+    .wshared.today,
+    .wspacer.today {
+      background: color-mix(in srgb, var(--fb-accent) 8%, transparent);
+    }
     .wday.today,
     .wcell.today {
       background: color-mix(in srgb, var(--fb-accent) 8%, transparent);
@@ -3633,6 +4164,29 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
       font-size: 8.5px;
       color: var(--secondary-text-color);
       font-variant-numeric: tabular-nums;
+    }
+    .wshared-chip {
+      border-radius: var(--fb-radius-sm);
+      padding: 3px 5px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      overflow: hidden;
+      cursor: pointer;
+    }
+    .wshared-chip span {
+      font-size: var(--fb-chip-size);
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .wshared-chip small {
+      margin-left: auto;
+      font-size: 8.5px;
+      color: var(--secondary-text-color);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
     }
     /* focus visibility for a11y */
     button:focus-visible,

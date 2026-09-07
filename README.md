@@ -20,6 +20,7 @@ Ein Familienkalender bzw. „Wer ist wann wo"-Board für [Home Assistant](https:
 - **Drag & Drop** – in der Tagesansicht Termine per Ziehen verschieben (Uhrzeit) und am unteren Rand die Dauer ändern; rastet aufs Zeitraster und schreibt direkt in den Kalender zurück – **nur** bei schreibbaren Kalendern, Einzeltermine (keine Serien).
 - **Termine verwalten** – anlegen/bearbeiten/löschen direkt in der Karte, **aber nur** bei Kalendern, die das unterstützen (Local Calendar, CalDAV …). Schreibgeschützte Kalender (z. B. ICS-Abos) werden automatisch erkannt und nur angezeigt. Wiederkehrende Termine: Wahl **„nur dieser / dieser und folgende"**.
 - **Mehrere Kalender pro Person** – z. B. Arbeit + privat in einer Spalte (im Editor auswählbar).
+- **Gemeinsamer Kalender für alle** – optional kann ein Kalender einmal als **Querbalken über alle Personenspalten** dargestellt werden; ideal für Familienereignisse, Feiertage oder gemeinsame Termine.
 - **Robuste Termin-Logik** – Ganztags-Events (Ende exklusiv), über Mitternacht laufende und mehrtägige Termine werden korrekt auf die Tage aufgeteilt; Zeitzonen werden berücksichtigt.
 - **Mehrsprachig & lokalisiert** – Texte in Deutsch/Englisch, Wochentage und Uhrzeiten (12/24 h) aus der HA-Locale; relative Tage („Heute/Morgen").
 - **Alltags-Politur** – vergangene Termine ausgegraut, Einfärben auch nach Kalender, Ort direkt in der Karten-App öffnen, störende Termine per Muster ausblenden.
@@ -31,6 +32,7 @@ Ein Familienkalender bzw. „Wer ist wann wo"-Board für [Home Assistant](https:
 - **Füllt den Bildschirm** – Personenspalten wachsen mit der Kartenbreite mit (Panel-Ansicht/breite Karten); mit `full_height` reicht das Board bis zum unteren Bildschirmrand. Spaltenbreite, Achsenbreite und Abstände sind einstellbar.
 - **Vorläufige Termine** – Termine, deren Titel ein `tentative_patterns`-Muster enthält, werden gestrichelt und leicht transparent dargestellt (opt-in; der Kalender-Status wird bewusst nicht ausgewertet).
 - **Entitäts-Badges pro Person** – beliebige Entitäten (Handy-Akku, Sensoren …) als kleine Chips unter dem Personenkopf; Klick öffnet den More-Info-Dialog.
+- **To-dos pro Person** – offene Einträge aus einer oder mehreren `todo.*`-Listen werden direkt unter dem Personenkopf angezeigt; Klick öffnet die jeweilige Liste.
 - **Kiosk-Modus** – optional nach X Minuten Inaktivität automatisch zurück zur Startansicht und zu „heute"; größere Touch-Ziele auf Touch-Geräten.
 - **Visueller Editor 2.0** – komplett ohne YAML: Erststart-Assistent, Ein-Klick-Profile (🖥️ Wandtablet / 📱 Handy / 🧩 Standard), aufklappbare Themen-Gruppen mit Hilfetexten, Farbpaletten-Wähler pro Person **und pro Kalender** (inkl. Label), Feintuning-Regler (Schriftgröße, Ecken-Radius, Deckkraft) – Felder erscheinen nur, wenn die zugehörige Ansicht aktiv ist.
 - **⚡ Zero-Config-Start** – beim Hinzufügen erkennt die Karte automatisch alle `person.*`-Entitäten und verknüpft passende Kalender per Namensabgleich; im Editor jederzeit per „✨ Automatisch erkennen" nachholbar.
@@ -76,21 +78,27 @@ show_now_line: true
 color_by: person     # person | location
 hour_height: 64      # Pixel pro Stunde (40–96), Tagesansicht
 refresh_interval: 300 # Sekunden; 0 = aus
+shared_calendar: calendar.familie # optional: einmal quer über alle Personen anzeigen
 persons:
   - name: Anna
     person: person.anna       # Avatar (entity_picture) + Live-Status
     calendar: calendar.anna   # Quelle der Termine
+    todo: todo.anna           # optional: offene To-dos unter dem Personenkopf
     color: '#8B7CF6'          # optional, sonst Default-Palette
   - name: Ben
     person: person.ben
     calendar:                   # mehrere Kalender pro Person möglich
       - calendar.ben_arbeit
       - calendar.ben_privat
+    todo:                       # mehrere To-do-Listen pro Person möglich
+      - todo.ben
+      - todo.familie
 ```
 
 | Option          | Typ     | Default | Beschreibung |
 |-----------------|---------|---------|--------------|
-| `persons`       | Liste   | –       | 1–10 Personen mit `name`, `person`, `calendar` (String **oder Liste**), optional `color`, `badges` (Entitäten als Chips) und `hidden` (startet eingeklappt) |
+| `persons`       | Liste   | –       | 1–10 Personen mit `name`, `person`, `calendar` (String **oder Liste**), optional `todo` (String **oder Liste**), `color`, `badges` (Entitäten als Chips) und `hidden` (startet eingeklappt) |
+| `shared_calendar` | string | – | Optionaler gemeinsamer `calendar.*`, dessen Termine einmal als Querbalken über alle Personen dargestellt werden |
 | `hide_empty_persons` | boolean | `false` | Wochenansicht: Personen ohne Termine in der Woche ausblenden |
 | `show_focus`    | boolean | `false` | „Jetzt / als Nächstes"-Leiste pro Person über den Ansichten |
 | `drag_drop`     | boolean | `true`  | Termine in der Tagesansicht per Ziehen verschieben / in der Dauer ändern (nur schreibbare Einzeltermine) |

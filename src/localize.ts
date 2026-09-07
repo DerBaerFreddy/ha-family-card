@@ -54,6 +54,10 @@ const EN: Dict = {
   more_events: "more events",
   focus_next: "next",
   focus_free: "free",
+  shared_events: "Shared",
+  todo_item: "to-do",
+  todo_items: "to-dos",
+  todo_due: "Due:",
 };
 
 const DE: Dict = {
@@ -105,6 +109,10 @@ const DE: Dict = {
   more_events: "weitere Termine",
   focus_next: "als Nächstes",
   focus_free: "frei",
+  shared_events: "Gemeinsam",
+  todo_item: "To-do",
+  todo_items: "To-dos",
+  todo_due: "Fällig:",
 };
 
 const TABLE: Record<string, Dict> = { en: EN, de: DE };

@@ -96,6 +96,20 @@ describe("parseRawEvent", () => {
     expect(r.rrule).toBe("FREQ=WEEKLY");
     expect(r.recurrence_id).toBe("2024-01-01T10:00:00");
   });
+
+  it("marks events from the shared calendar", () => {
+    const r = parseRawEvent(
+      {
+        start: { dateTime: "2024-01-01T10:00:00Z" },
+        end: { dateTime: "2024-01-01T11:00:00Z" },
+      },
+      -1,
+      "calendar.family",
+      "#abc",
+      true,
+    )!;
+    expect(r.shared).toBe(true);
+  });
 });
 
 describe("splitIntoSegments", () => {
@@ -160,6 +174,18 @@ describe("splitIntoSegments", () => {
     const segs = splitAcrossDays(raw, monday, 42);
     expect(segs).toHaveLength(1);
     expect(segs[0].day).toBe(9);
+  });
+
+  it("preserves the shared marker on split segments", () => {
+    const raw = parseRawEvent(
+      { start: { dateTime: "2024-01-01T10:00:00" }, end: { dateTime: "2024-01-01T11:00:00" } },
+      -1,
+      "calendar.family",
+      "#abc",
+      true,
+    )!;
+    const segs = splitIntoSegments(raw, monday);
+    expect(segs[0].shared).toBe(true);
   });
 });
 

@@ -10,6 +10,7 @@ interface PersonConfig {
   name?: string;
   person?: string;
   calendar?: string | string[];
+  todo?: string | string[];
   color?: string;
   badges?: string[];
   hidden?: boolean;
@@ -38,6 +39,7 @@ const PERSON_SCHEMA = [
   { name: "name", selector: { text: {} } },
   { name: "person", selector: { entity: { filter: { domain: "person" } } } },
   { name: "calendar", selector: { entity: { filter: { domain: "calendar" }, multiple: true } } },
+  { name: "todo", selector: { entity: { filter: { domain: "todo" }, multiple: true } } },
   { name: "badges", selector: { entity: { multiple: true } } },
   { name: "color", selector: { text: {} } },
   { name: "hidden", selector: { boolean: {} } },
@@ -93,7 +95,7 @@ export class FamilyBoardCardEditor extends LitElement implements LovelaceCardEdi
 
   /** True when nothing meaningful is configured yet -> show the wizard. */
   private get _isFresh(): boolean {
-    return !this._persons.some((p) => p.name || p.person || p.calendar);
+    return !this._persons.some((p) => p.name || p.person || p.calendar || p.todo);
   }
 
   private get _settingsData() {
@@ -169,6 +171,10 @@ export class FamilyBoardCardEditor extends LitElement implements LovelaceCardEdi
 
     return [
       { name: "title", selector: { text: {} } },
+      {
+        name: "shared_calendar",
+        selector: { entity: { filter: { domain: "calendar" } } },
+      },
       group(this._t("g_views"), "mdi:calendar-multiselect", [
         {
           name: "view",
@@ -326,6 +332,10 @@ export class FamilyBoardCardEditor extends LitElement implements LovelaceCardEdi
       if (value.calendar.length === 0) delete value.calendar;
       else if (value.calendar.length === 1) value.calendar = value.calendar[0];
     }
+    if (Array.isArray(value.todo)) {
+      if (value.todo.length === 0) delete value.todo;
+      else if (value.todo.length === 1) value.todo = value.todo[0];
+    }
     const persons = this._persons.map((p, i) => (i === idx ? value : p));
     this._emit({ ...this._config, persons });
   }
@@ -333,7 +343,8 @@ export class FamilyBoardCardEditor extends LitElement implements LovelaceCardEdi
   /** Normalize a person's calendar to an array for the multi-entity picker. */
   private _personData(p: PersonConfig): PersonConfig {
     const calendar = Array.isArray(p.calendar) ? p.calendar : p.calendar ? [p.calendar] : [];
-    return { ...p, calendar };
+    const todo = Array.isArray(p.todo) ? p.todo : p.todo ? [p.todo] : [];
+    return { ...p, calendar, todo };
   }
 
   private _setPersonColor(idx: number, color?: string): void {
@@ -382,6 +393,8 @@ export class FamilyBoardCardEditor extends LitElement implements LovelaceCardEdi
       const cals = Array.isArray(p.calendar) ? p.calendar : p.calendar ? [p.calendar] : [];
       for (const c of cals) if (c && !all.includes(c)) all.push(c);
     }
+    const shared = this._config.shared_calendar;
+    if (shared && !all.includes(shared)) all.push(shared);
     return all;
   }
 

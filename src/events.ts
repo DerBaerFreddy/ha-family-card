@@ -37,6 +37,7 @@ export function dragTimes(
 /** A raw event as returned by HA, kept so we can edit/delete it. */
 export interface RawEvent {
   personIdx: number;
+  shared?: boolean;
   calendar: string;
   uid?: string;
   recurrence_id?: string;
@@ -55,6 +56,7 @@ export interface RawEvent {
 export interface BoardEvent {
   ref: RawEvent;
   personIdx: number;
+  shared?: boolean;
   day: number; // 0 = Monday, within the current week
   startMin: number; // minutes from midnight of `day`
   endMin: number; // minutes from midnight of `day` (1440 = end of day)
@@ -82,6 +84,7 @@ export function parseRawEvent(
   personIdx: number,
   calendar: string,
   color: string,
+  shared: boolean = false,
 ): RawEvent | null {
   const allDay = !ev?.start?.dateTime;
   let start: Date;
@@ -101,6 +104,7 @@ export function parseRawEvent(
   }
   return {
     personIdx,
+    shared,
     calendar,
     uid: ev.uid,
     recurrence_id: ev.recurrence_id,
@@ -152,6 +156,7 @@ export function splitAcrossDays(raw: RawEvent, gridStart: Date, numDays: number)
       parts: totalParts > 1 ? totalParts : undefined,
       ref: raw,
       personIdx: raw.personIdx,
+      shared: raw.shared === true,
       day: d,
       startMin,
       endMin: Math.min(endMin, 1440),
