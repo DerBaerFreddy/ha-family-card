@@ -11,7 +11,6 @@ Repo einmalig in die `hacs/default`-Liste aufgenommen werden.
 - [x] Repo-**Topics** gesetzt
 - [x] `hacs.json` mit `name` und `filename`
 - [x] README mit Beschreibung **und Bild**
-- [x] `hacs/action` (Plugin) Validierung grün — siehe `.github/workflows/validate.yml`
 - [ ] **Mindestens ein veröffentlichtes GitHub-Release** mit angehängtem
       `ha-family-board-card.js` (übernimmt `.github/workflows/release.yml` automatisch)
 
