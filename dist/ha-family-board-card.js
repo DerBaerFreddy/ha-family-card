@@ -424,66 +424,66 @@ function e(e,t,i,s){var a,r=arguments.length,o=r<3?t:null===s?s=Object.getOwnPro
                 ${this._avatar(e,t)}<span>${this._personName(e,t)}</span>
               </div>`)}
           ${this._visibleDays.map(t=>{const s=this._sharedFor(t);return K`
-                <div
-                  class="wday ${this._isRealToday(t)?"today":""}"
-                  role="button"
-                  tabindex="0"
-                  title=${this._t("day")}
-                  @click=${()=>this._openDayView(t)}
-                  @keydown=${e=>{"Enter"!==e.key&&" "!==e.key||(e.preventDefault(),this._openDayView(t))}}
-                >
-                  <b>${e[t]}</b>
-                </div>
-                ${s.length?K`
-                      <div class="wshared ${this._isRealToday(t)?"today":""}">
-                        ${s.map(e=>{const t=this._eventColor(e),i=this._isTentative(e);return K`
-                            <div
-                              class="wshared-chip ${this._isPast(e)?"past":""} ${i?"tentative":""}"
-                              style="border-left:2.5px ${i?"dashed":"solid"} ${t};background:${t}28;background:color-mix(in srgb, ${t} 18%, var(--card-background-color, #fff))"
-                              title="${this._evTitle(e)}"
-                              tabindex="0"
-                              role="button"
-                              @click=${t=>{t.stopPropagation(),this._openEvent(e)}}
-                              @keydown=${t=>this._onItemKey(t,e)}
-                            >
-                              <span class="shared-tag">${this._sharedLabel()}</span>
-                              <span
-                                >${this._calIconEl(e)}${e.continuesBefore?"« ":""}${this._evTitle(e)}${e.continuesAfter?" »":""}</span
-                              >
-                              ${e.allDay?K`<small>${this._t("all_day")}</small>`:K`<small
-                                    >${ke(this.hass,e.startMin)}–${ke(this.hass,e.endMin)}</small
-                                  >`}
-                            </div>
-                          `})}
-                      </div>
-                      <div class="wspacer ${this._isRealToday(t)?"today":""}"></div>
-                    `:W}
-                ${i.map(({p:e,i:i})=>{const s=this._personCanCreate(e);return K`
-                    <div
-                      class="wcell ${this._isRealToday(t)?"today":""} ${s?"creatable":""}"
-                      @click=${()=>s&&this._openCreate(i,t)}
-                    >
-                      ${this._eventsFor(t,i).map(e=>{const t=this._eventColor(e),i=this._isTentative(e);return K`
+              <div
+                class="wday ${this._isRealToday(t)?"today":""}"
+                role="button"
+                tabindex="0"
+                title=${this._t("day")}
+                @click=${()=>this._openDayView(t)}
+                @keydown=${e=>{"Enter"!==e.key&&" "!==e.key||(e.preventDefault(),this._openDayView(t))}}
+              >
+                <b>${e[t]}</b>
+              </div>
+              ${s.length?K`
+                    <div class="wshared ${this._isRealToday(t)?"today":""}">
+                      ${s.map(e=>{const t=this._eventColor(e),i=this._isTentative(e);return K`
                           <div
-                            class="wchip ${this._isPast(e)?"past":""} ${i?"tentative":""} ${this._isTodo(e)?"todo":""}"
-                            style="border-left:2.5px ${i?"dashed":"solid"} ${t};background:${t}30;background:color-mix(in srgb, ${t} 22%, var(--card-background-color, #fff))"
+                            class="wshared-chip ${this._isPast(e)?"past":""} ${i?"tentative":""}"
+                            style="border-left:2.5px ${i?"dashed":"solid"} ${t};background:${t}28;background:color-mix(in srgb, ${t} 18%, var(--card-background-color, #fff))"
                             title="${this._evTitle(e)}"
                             tabindex="0"
                             role="button"
                             @click=${t=>{t.stopPropagation(),this._openEvent(e)}}
                             @keydown=${t=>this._onItemKey(t,e)}
                           >
-                            <span class=${this._isTodo(e)?"todo-line":""}
-                              >${this._isTodo(e)?this._renderTodoCheckbox(e):W}${this._isTodo(e)?K`<span class="todo-label"
-                                    >${this._calIconEl(e)}${e.continuesBefore?"« ":""}${this._evTitle(e)}</span
-                                  >`:K`${this._calIconEl(e)}${e.continuesBefore?"« ":""}${this._evTitle(e)}`}</span
+                            <span class="shared-tag">${this._sharedLabel()}</span>
+                            <span
+                              >${this._calIconEl(e)}${e.continuesBefore?"« ":""}${this._evTitle(e)}${e.continuesAfter?" »":""}</span
                             >
-                            ${e.allDay?W:K`<small>${ke(this.hass,e.startMin)}</small>`}
+                            ${e.allDay?K`<small>${this._t("all_day")}</small>`:K`<small
+                                  >${ke(this.hass,e.startMin)}–${ke(this.hass,e.endMin)}</small
+                                >`}
                           </div>
                         `})}
                     </div>
-                  `})}
-              `})}
+                    <div class="wspacer ${this._isRealToday(t)?"today":""}"></div>
+                  `:W}
+              ${i.map(({p:e,i:i})=>{const s=this._personCanCreate(e);return K`
+                  <div
+                    class="wcell ${this._isRealToday(t)?"today":""} ${s?"creatable":""}"
+                    @click=${()=>s&&this._openCreate(i,t)}
+                  >
+                    ${this._eventsFor(t,i).map(e=>{const t=this._eventColor(e),i=this._isTentative(e);return K`
+                        <div
+                          class="wchip ${this._isPast(e)?"past":""} ${i?"tentative":""} ${this._isTodo(e)?"todo":""}"
+                          style="border-left:2.5px ${i?"dashed":"solid"} ${t};background:${t}30;background:color-mix(in srgb, ${t} 22%, var(--card-background-color, #fff))"
+                          title="${this._evTitle(e)}"
+                          tabindex="0"
+                          role="button"
+                          @click=${t=>{t.stopPropagation(),this._openEvent(e)}}
+                          @keydown=${t=>this._onItemKey(t,e)}
+                        >
+                          <span class=${this._isTodo(e)?"todo-line":""}
+                            >${this._isTodo(e)?this._renderTodoCheckbox(e):W}${this._isTodo(e)?K`<span class="todo-label"
+                                  >${this._calIconEl(e)}${e.continuesBefore?"« ":""}${this._evTitle(e)}</span
+                                >`:K`${this._calIconEl(e)}${e.continuesBefore?"« ":""}${this._evTitle(e)}`}</span
+                          >
+                          ${e.allDay?W:K`<small>${ke(this.hass,e.startMin)}</small>`}
+                        </div>
+                      `})}
+                  </div>
+                `})}
+            `})}
         </div>
       </div>
     `}_renderAgenda(){const e=De(this.hass,"long",this._firstDayJs),t=new Intl.DateTimeFormat(this.hass.locale?.language||"en",{day:"numeric",month:"short"}),i=e=>{if(!this._config.filter_duplicates)return e;const t=new Set;return e.filter(e=>{const i=`${this._evTitle(e)}|${e.ref.start.getTime()}|${e.ref.end.getTime()}`;return!t.has(i)&&(t.add(i),!0)})},s=this._visibleDays.map(e=>({d:e,items:i(this._events.filter(t=>t.day===e&&!this._isOff(t.personIdx)).sort((e,t)=>Number(t.allDay)-Number(e.allDay)||e.startMin-t.startMin))})).filter(e=>e.items.length>0);return K`
@@ -1063,7 +1063,11 @@ function e(e,t,i,s){var a,r=arguments.length,o=r<3?t:null===s?s=Object.getOwnPro
     .shared-row {
       display: flex;
       border-bottom: 1px solid var(--divider-color);
-      background: color-mix(in srgb, var(--fb-accent) 4%, var(--card-background-color, var(--ha-card-background)));
+      background: color-mix(
+        in srgb,
+        var(--fb-accent) 4%,
+        var(--card-background-color, var(--ha-card-background))
+      );
       position: sticky;
       top: var(--fb-sticky-header-h, 0px);
       z-index: 6;
