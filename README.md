@@ -82,6 +82,8 @@ refresh_interval: 300 # Sekunden; 0 = aus
 shared_calendar:              # optional: ein oder mehrere gemeinsame Kalender
   - calendar.familie
   - calendar.schule
+shared_todo:                  # optional: gemeinsame To-do-Listen
+  - todo.familie
 persons:
   - name: Anna
     person: person.anna       # Avatar (entity_picture) + Live-Status
@@ -102,6 +104,7 @@ persons:
 |-----------------|---------|---------|--------------|
 | `persons`       | Liste   | –       | 1–10 Personen mit `name`, `person`, `calendar` (String **oder Liste**), optional `todo` (String **oder Liste**), `color`, `badges` (Entitäten als Chips) und `hidden` (startet eingeklappt) |
 | `shared_calendar` | string/list | – | Ein oder mehrere gemeinsame `calendar.*`, deren Termine einmal über alle Personen dargestellt werden; in der gemeinsamen Leiste stehen auch zeitgebundene Termine mit Uhrzeit |
+| `shared_todo`   | string/list | – | Ein oder mehrere gemeinsame `todo.*`, deren offene Einträge einmal für alle dargestellt werden; zeitgebundene To-dos erscheinen zusätzlich oben als Hinweis im To-do-Bereich |
 | `hide_empty_persons` | boolean | `false` | Wochenansicht: Personen ohne Termine in der Woche ausblenden |
 | `show_focus`    | boolean | `false` | „Jetzt / als Nächstes"-Leiste pro Person über den Ansichten |
 | `drag_drop`     | boolean | `true`  | Termine in der Tagesansicht per Ziehen verschieben / in der Dauer ändern (nur schreibbare Einzeltermine) |

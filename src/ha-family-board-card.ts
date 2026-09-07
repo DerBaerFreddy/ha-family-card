@@ -36,7 +36,7 @@ interface PersonConfig {
   name?: string;
   person?: string; // person.* entity -> avatar (entity_picture) + live status
   calendar?: string | string[]; // calendar.* entity/entities -> events
-  todo?: string | string[]; // todo.* list/lists shown under the person header
+  todo?: string | string[]; // todo.* list/lists shown in the calendar
   color?: string; // optional override; default falls back to a palette
   badges?: string[]; // extra entities shown as chips under the person header
   hidden?: boolean; // start collapsed (person toggle can bring them back)
@@ -45,6 +45,7 @@ interface PersonConfig {
 export interface FamilyBoardConfig extends LovelaceCardConfig {
   persons: PersonConfig[];
   shared_calendar?: string | string[]; // optional calendar(s) shown once across all person columns
+  shared_todo?: string | string[]; // optional todo list(s) shown once across all person columns
   title?: string;
   view?: ViewName;
   views?: ViewName[]; // which views appear in the toggle. default: all
@@ -683,16 +684,21 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
   private async _maybeFetch(): Promise<void> {
     const cals = this._config.persons.map((p) => this._calsOf(p).join("+")).join(",");
     const shared = this._sharedCals().join("+");
-    const todos = this._config.persons.map((p) => this._todosOf(p).join("+")).join(",");
-    const todoState = this._config.persons
-      .flatMap((p) => this._todosOf(p))
+    const sharedTodos = this._sharedTodos().join("+");
+    const todos = [
+      ...this._config.persons.map((p) => this._todosOf(p).join("+")),
+      this._sharedTodos().join("+"),
+    ].join(",");
+    const todoState = Array.from(
+      new Set([...this._config.persons.flatMap((p) => this._todosOf(p)), ...this._sharedTodos()]),
+    )
       .map((id) => {
         const st = this.hass.states[id];
         return `${id}:${st?.state ?? ""}:${st?.last_updated ?? ""}`;
       })
       .join(",");
     const scope = this._view === "month" ? `m${this._monthOffset}` : `w${this._weekOffset}`;
-    const key = `${scope}|${cals}|${shared}|${todos}|${todoState}`;
+    const key = `${scope}|${cals}|${shared}|${sharedTodos}|${todos}|${todoState}`;
     if (key === this._fetchedKey) return;
     this._fetchedKey = key;
     await this._fetchEvents();
@@ -854,7 +860,10 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
           fetchCalendar(cal, SHARED_PERSON_IDX, this._calMeta(cal).color ?? hashColor(cal), true),
         ),
     ]);
-    const todoIds = Array.from(new Set(this._config.persons.flatMap((p) => this._todosOf(p))));
+    const sharedTodoIds = this._sharedTodoIds();
+    const todoIds = Array.from(
+      new Set([...this._config.persons.flatMap((p) => this._todosOf(p)), ...sharedTodoIds]),
+    );
     if (todoIds.length > 0) {
       try {
         const res: any = await this.hass.callWS({
@@ -874,20 +883,36 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
           { items?: TodoItem[] } | undefined
         >;
         const anchors = this._todoAnchorDates(start, end);
-        this._config.persons.forEach((p, idx) => {
-          const color = personColor(p, idx);
-          this._todosOf(p).forEach((id) => {
-            const items = payload?.[id]?.items;
-            if (!Array.isArray(items)) return;
-            items.forEach((item) => {
-              const due = typeof item.due === "string" ? item.due.trim() : "";
-              const itemAnchors = due ? [anchors[0]] : anchors;
-              itemAnchors.forEach((anchor) => {
-                const raw = this._todoToRawEvent(item, idx, color, id, anchor, start, end);
-                if (raw) raws.push(raw);
-              });
+        const pushTodoEvents = (
+          items: TodoItem[],
+          idx: number,
+          color: string,
+          id: string,
+          shared = false,
+        ) => {
+          items.forEach((item) => {
+            const due = typeof item.due === "string" ? item.due.trim() : "";
+            const itemAnchors = due ? [anchors[0]] : anchors;
+            itemAnchors.forEach((anchor) => {
+              const raw = this._todoToRawEvent(item, idx, color, id, anchor, start, end, shared);
+              if (raw) raws.push(raw);
             });
           });
+        };
+        this._config.persons.forEach((p, idx) => {
+          const color = personColor(p, idx);
+          this._todosOf(p)
+            .filter((id) => !sharedTodoIds.includes(id))
+            .forEach((id) => {
+              const items = payload?.[id]?.items;
+              if (!Array.isArray(items)) return;
+              pushTodoEvents(items, idx, color, id);
+            });
+        });
+        sharedTodoIds.forEach((id) => {
+          const items = payload?.[id]?.items;
+          if (!Array.isArray(items)) return;
+          pushTodoEvents(items, SHARED_PERSON_IDX, hashColor(id), id, true);
         });
       } catch (_err) {
         // Keep calendar events visible even if the todo service is unavailable.
@@ -939,6 +964,25 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
     if (Array.isArray(p.todo)) return p.todo.filter(Boolean);
     return p.todo ? [p.todo] : [];
   }
+  private _sharedTodos(): string[] {
+    const val = this._config.shared_todo;
+    if (Array.isArray(val)) return val.filter(Boolean);
+    return val ? [val] : [];
+  }
+  private _sharedTodoIds(): string[] {
+    const ids: string[] = [];
+    this._sharedTodos().forEach((id) => {
+      if (!ids.includes(id)) ids.push(id);
+    });
+    const counts = new Map<string, number>();
+    this._config.persons.forEach((p) => {
+      new Set(this._todosOf(p)).forEach((id) => counts.set(id, (counts.get(id) ?? 0) + 1));
+    });
+    counts.forEach((count, id) => {
+      if (count > 1 && !ids.includes(id)) ids.push(id);
+    });
+    return ids;
+  }
   /** Calendars of a person that allow creating events. */
   private _writableCals(p: PersonConfig): string[] {
     return this._calsOf(p).filter((c) => this._canCreate(c));
@@ -983,6 +1027,10 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
   private _sharedLabel(): string {
     const shared = this._sharedCalendarIds();
     return shared.length === 1 ? this._calLabel(shared[0]) : this._t("shared_events");
+  }
+  private _sharedTodoLabel(): string {
+    const shared = this._sharedTodoIds();
+    return shared.length === 1 ? this._todoLabel(shared[0]) : this._t("shared_todos");
   }
 
   /* ---- helpers ------------------------------------------------- */
@@ -1108,6 +1156,16 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
       .filter((e) => e.day === day && this._isShared(e))
       .sort((a, b) => Number(b.allDay) - Number(a.allDay) || a.startMin - b.startMin);
   }
+  private _todosFor(day: number, idx: number): BoardEvent[] {
+    if (this._isOff(idx)) return [];
+    return this._eventsFor(day, idx).filter((e) => this._isTodo(e));
+  }
+  private _timedTodosFor(day: number, idx: number): BoardEvent[] {
+    return this._todosFor(day, idx).filter((e) => !e.allDay);
+  }
+  private _sharedTodosFor(day: number): BoardEvent[] {
+    return this._sharedFor(day).filter((e) => this._isTodo(e));
+  }
   private _todoAnchorDates(rangeStart: Date, rangeEnd: Date): Date[] {
     const dates: Date[] = [];
     const cursor = startOfDay(rangeStart);
@@ -1125,6 +1183,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
     anchor: Date,
     rangeStart: Date,
     rangeEnd: Date,
+    shared: boolean = false,
   ): RawEvent | null {
     if (!item || typeof item.summary !== "string" || item.status === "completed") return null;
     const rawDue = typeof item.due === "string" ? item.due.trim() : "";
@@ -1152,6 +1211,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
     return {
       kind: "todo",
       personIdx,
+      shared,
       calendar: entityId,
       uid: item.uid,
       summary: item.summary.trim() || this._t("todo"),
@@ -1174,6 +1234,11 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
   }
   private _sharedTimed(day: number): LaidOutEvent[] {
     return layoutDayColumns(this._sharedFor(day).filter((e) => !e.allDay));
+  }
+  private _todoHintLabel(e: BoardEvent): string {
+    return e.allDay
+      ? this._evTitle(e)
+      : `${formatMinutes(this.hass, e.startMin)} ${this._evTitle(e)}`;
   }
   private _sharedBandBox(
     e: LaidOutEvent,
@@ -1753,7 +1818,9 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
     const { startMin, endMin } = this._dayWindow(day);
     const height = (endMin - startMin) * px;
     const full = weekdayNames(this.hass, "long", this._firstDayJs);
-    const sharedAllDay = this._sharedAllDay(day);
+    const sharedAllDay = this._sharedAllDay(day).filter((e) => !this._isTodo(e));
+    const sharedTodoAllDay = this._sharedTodosFor(day).filter((e) => e.allDay);
+    const sharedTodoTimedHints = this._sharedTodosFor(day).filter((e) => !e.allDay);
     const sharedTimed = this._sharedTimed(day);
 
     const hours: number[] = [];
@@ -1763,7 +1830,12 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
     const nowMin = Math.max(startMin, Math.min(endMin, now.getHours() * 60 + now.getMinutes()));
     const showNow = this._config.show_now_line !== false && this._isRealToday(day);
     const hasAllDay =
-      sharedAllDay.length > 0 || this._persons.some((_, i) => this._allDayFor(day, i).length > 0);
+      sharedAllDay.length > 0 ||
+      sharedTodoAllDay.length > 0 ||
+      sharedTodoTimedHints.length > 0 ||
+      this._persons.some(
+        (_, i) => this._allDayFor(day, i).length > 0 || this._timedTodosFor(day, i).length > 0,
+      );
 
     return html`
       <div class="dayhead">
@@ -1814,7 +1886,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
               <div class="allday-row">
                 <div class="axis-spacer allday-label">${this._t("all_day")}</div>
                 <div class="allday-main">
-                  ${sharedAllDay.length
+                  ${sharedAllDay.length || sharedTodoAllDay.length || sharedTodoTimedHints.length
                     ? html`<div class="allday-shared">
                         ${sharedAllDay.map((e) => {
                           const c = this._eventColor(e);
@@ -1846,6 +1918,53 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                             </div>
                           `;
                         })}
+                        ${sharedTodoAllDay.length || sharedTodoTimedHints.length
+                          ? html`<div
+                              class="allday-group todo-group ${sharedAllDay.length
+                                ? "separated"
+                                : ""}"
+                            >
+                              <div class="allday-group-label">${this._sharedTodoLabel()}</div>
+                              ${sharedTodoAllDay.map((e) => {
+                                const c = this._eventColor(e);
+                                return html`
+                                  <div
+                                    class="adchip todo"
+                                    style="border-left:3px solid ${c};background:${c}30;background:color-mix(in srgb, ${c} 18%, var(--card-background-color, #fff))"
+                                    title="${this._evTitle(e)}"
+                                    tabindex="0"
+                                    role="button"
+                                    @click=${() => this._openEvent(e)}
+                                    @keydown=${(k: KeyboardEvent) => this._onItemKey(k, e)}
+                                  >
+                                    <span class="todo-line">
+                                      ${this._renderTodoCheckbox(e)}
+                                      <span class="todo-label">${this._evTitle(e)}</span>
+                                    </span>
+                                  </div>
+                                `;
+                              })}
+                              ${sharedTodoTimedHints.map((e) => {
+                                const c = this._eventColor(e);
+                                return html`
+                                  <div
+                                    class="adchip todo hint"
+                                    style="border-left:3px solid ${c};background:${c}24;background:color-mix(in srgb, ${c} 14%, var(--card-background-color, #fff))"
+                                    title="${this._todoHintLabel(e)}"
+                                    tabindex="0"
+                                    role="button"
+                                    @click=${() => this._openEvent(e)}
+                                    @keydown=${(k: KeyboardEvent) => this._onItemKey(k, e)}
+                                  >
+                                    <span class="todo-line">
+                                      ${this._renderTodoCheckbox(e)}
+                                      <span class="todo-label">${this._todoHintLabel(e)}</span>
+                                    </span>
+                                  </div>
+                                `;
+                              })}
+                            </div>`
+                          : nothing}
                       </div>`
                     : nothing}
                   <div class="allday-grid">
@@ -1853,6 +1972,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                       const items = this._allDayFor(day, i);
                       const calendarItems = items.filter((e) => !this._isTodo(e));
                       const todoItems = items.filter((e) => this._isTodo(e));
+                      const timedTodoItems = this._timedTodosFor(day, i);
                       return html`
                         <div class="allday-cell ${this._isOff(i) ? "off" : ""}">
                           ${calendarItems.map((e) => {
@@ -1876,7 +1996,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                               </div>
                             `;
                           })}
-                          ${todoItems.length
+                          ${todoItems.length || timedTodoItems.length
                             ? html`<div
                                 class="allday-group todo-group ${calendarItems.length
                                   ? "separated"
@@ -1905,6 +2025,28 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                                             e,
                                           )}${e.continuesAfter ? " »" : ""}</span
                                         >
+                                      </span>
+                                    </div>
+                                  `;
+                                })}
+                                ${timedTodoItems.map((e) => {
+                                  const c = this._eventColor(e);
+                                  const tent = this._isTentative(e);
+                                  return html`
+                                    <div
+                                      class="adchip todo hint ${tent ? "tentative" : ""}"
+                                      style="border-left:3px ${tent
+                                        ? "dashed"
+                                        : "solid"} ${c};background:${c}24;background:color-mix(in srgb, ${c} 14%, var(--card-background-color, #fff))"
+                                      title="${this._todoHintLabel(e)}"
+                                      tabindex="0"
+                                      role="button"
+                                      @click=${() => this._openEvent(e)}
+                                      @keydown=${(k: KeyboardEvent) => this._onItemKey(k, e)}
+                                    >
+                                      <span class="todo-line">
+                                        ${this._renderTodoCheckbox(e)}
+                                        <span class="todo-label">${this._todoHintLabel(e)}</span>
                                       </span>
                                     </div>
                                   `;
@@ -3684,6 +3826,12 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
     }
     .adchip.todo {
       background: color-mix(in srgb, var(--secondary-background-color) 86%, transparent) !important;
+    }
+    .adchip.todo.hint {
+      opacity: 0.92;
+    }
+    .adchip.todo.hint .todo-label {
+      color: var(--secondary-text-color);
     }
     .todo-line {
       display: flex;

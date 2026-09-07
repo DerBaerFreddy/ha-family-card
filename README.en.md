@@ -82,6 +82,8 @@ refresh_interval: 300 # seconds; 0 = off
 shared_calendar:            # optional: one or more shared calendars
   - calendar.family
   - calendar.school
+shared_todo:                # optional: shared to-do lists
+  - todo.family
 persons:
   - name: Anna
     person: person.anna     # avatar (entity_picture) + live status
@@ -102,6 +104,7 @@ persons:
 |--------|------|---------|-------------|
 | `persons` | list | – | 1–10 people with `name`, `person`, `calendar` (string **or list**), optional `todo` (string **or list**), `color`, `badges` (entities as chips) and `hidden` (starts collapsed) |
 | `shared_calendar` | string/list | – | One or more shared `calendar.*` entries shown once across all people; the shared row also lists timed events with their time |
+| `shared_todo` | string/list | – | One or more shared `todo.*` lists shown once for everyone; timed to-dos also appear as a hint in the top to-do area |
 | `hide_empty_persons` | boolean | `false` | Week view: hide people without events in that week |
 | `show_focus` | boolean | `false` | “Now / next” bar per person above the views |
 | `drag_drop` | boolean | `true` | Move / resize events in the day view by dragging (writable single events only) |

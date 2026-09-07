@@ -104,7 +104,17 @@ export class FamilyBoardCardEditor extends LitElement implements LovelaceCardEdi
       : this._config.shared_calendar
         ? [this._config.shared_calendar]
         : [];
-    return { ...this._config, time_grid: String(this._config.time_grid ?? 30), shared_calendar };
+    const shared_todo = Array.isArray(this._config.shared_todo)
+      ? this._config.shared_todo
+      : this._config.shared_todo
+        ? [this._config.shared_todo]
+        : [];
+    return {
+      ...this._config,
+      time_grid: String(this._config.time_grid ?? 30),
+      shared_calendar,
+      shared_todo,
+    };
   }
 
   /** Grouped settings schema; irrelevant fields are hidden contextually. */
@@ -179,6 +189,10 @@ export class FamilyBoardCardEditor extends LitElement implements LovelaceCardEdi
       {
         name: "shared_calendar",
         selector: { entity: { filter: { domain: "calendar" }, multiple: true } },
+      },
+      {
+        name: "shared_todo",
+        selector: { entity: { filter: { domain: "todo" }, multiple: true } },
       },
       group(this._t("g_views"), "mdi:calendar-multiselect", [
         {
@@ -281,6 +295,10 @@ export class FamilyBoardCardEditor extends LitElement implements LovelaceCardEdi
     if (Array.isArray(next.shared_calendar)) {
       if (next.shared_calendar.length === 0) delete next.shared_calendar;
       else if (next.shared_calendar.length === 1) next.shared_calendar = next.shared_calendar[0];
+    }
+    if (Array.isArray(next.shared_todo)) {
+      if (next.shared_todo.length === 0) delete next.shared_todo;
+      else if (next.shared_todo.length === 1) next.shared_todo = next.shared_todo[0];
     }
     // keep persons + calendars untouched by the settings form
     this._emit({
