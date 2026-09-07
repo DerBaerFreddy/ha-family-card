@@ -36,6 +36,7 @@ export function dragTimes(
 
 /** A raw event as returned by HA, kept so we can edit/delete it. */
 export interface RawEvent {
+  kind?: "calendar" | "todo";
   personIdx: number;
   shared?: boolean;
   calendar: string;
@@ -50,6 +51,9 @@ export interface RawEvent {
   end: Date; // absolute end (exclusive)
   color: string;
   tentative?: boolean; // provisional event (dashed styling)
+  todo_item?: string;
+  todo_due?: string;
+  todo_due_has_time?: boolean;
 }
 
 /** A per-day display segment derived from a RawEvent. */

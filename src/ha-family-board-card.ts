@@ -318,8 +318,6 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
   @state() private _todoDialog?: TodoDialogState;
   @state() private _loadError = false;
   @state() private _loading = false;
-  @state() private _todos: Record<number, PersonTodoItem[]> = {};
-  @state() private _todoBusy: string[] = [];
   @state() private _fitPx = 0;
   @state() private _hiddenP: number[] = []; // temporarily hidden persons (header click) // measured px/min when fit_height is on (0 = not measured)
   @state() private _drag?: {
@@ -695,7 +693,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
     const key = `${scope}|${cals}|${shared}|${todos}|${todoState}`;
     if (key === this._fetchedKey) return;
     this._fetchedKey = key;
-    await Promise.all([this._fetchEvents(), this._fetchTodos()]);
+    await this._fetchEvents();
   }
 
   /** Force a refresh on next update (e.g. after a mutation or timer). */
@@ -854,12 +852,47 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
           fetchCalendar(cal, SHARED_PERSON_IDX, this._calMeta(cal).color ?? hashColor(cal), true),
         ),
     ]);
+    const todoIds = Array.from(new Set(this._config.persons.flatMap((p) => this._todosOf(p))));
+    if (todoIds.length > 0) {
+      try {
+        const res: any = await this.hass.callWS({
+          type: "execute_script",
+          sequence: [
+            {
+              action: "todo.get_items",
+              target: { entity_id: todoIds },
+              data: { status: ["needs_action"] },
+              response_variable: "fb_todos",
+            },
+            { stop: "", response_variable: "fb_todos" },
+          ],
+        });
+        const payload = ((res as { response?: unknown }).response ?? res) as Record<
+          string,
+          { items?: TodoItem[] } | undefined
+        >;
+        const anchor = this._todoAnchorDate(start, end);
+        this._config.persons.forEach((p, idx) => {
+          const color = personColor(p, idx);
+          this._todosOf(p).forEach((id) => {
+            const items = payload?.[id]?.items;
+            if (!Array.isArray(items)) return;
+            items.forEach((item) => {
+              const raw = this._todoToRawEvent(item, idx, color, id, anchor, start, end);
+              if (raw) raws.push(raw);
+            });
+          });
+        });
+      } catch (_err) {
+        // Keep calendar events visible even if the todo service is unavailable.
+      }
+    }
     let cleaned = raws;
     if (this._config.filter_duplicates) {
-      // same title/start/end within ONE person (e.g. mirrored in two calendars)
+      // same title/start/end/kind within ONE person (e.g. mirrored in two calendars)
       const seen = new Set<string>();
       cleaned = raws.filter((r) => {
-        const key = `${r.personIdx}|${r.summary}|${r.start.getTime()}|${r.end.getTime()}`;
+        const key = `${r.kind ?? "calendar"}|${r.personIdx}|${r.calendar}|${r.uid ?? r.todo_item ?? r.summary}|${r.start.getTime()}|${r.end.getTime()}`;
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
@@ -872,51 +905,6 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
       this._view === "month" ? [] : cleaned.flatMap((r) => splitIntoSegments(r, monday));
     this._loadError = anyError && raws.length === 0;
     this._loading = false;
-  }
-
-  private async _fetchTodos(): Promise<void> {
-    const ids = Array.from(new Set(this._config.persons.flatMap((p) => this._todosOf(p))));
-    if (ids.length === 0) {
-      if (Object.keys(this._todos).length) this._todos = {};
-      return;
-    }
-    try {
-      const res: any = await this.hass.callWS({
-        type: "execute_script",
-        sequence: [
-          {
-            action: "todo.get_items",
-            target: { entity_id: ids },
-            data: { status: ["needs_action"] },
-            response_variable: "fb_todos",
-          },
-          { stop: "", response_variable: "fb_todos" },
-        ],
-      });
-      const payload = ((res as { response?: unknown }).response ?? res) as Record<
-        string,
-        { items?: TodoItem[] } | undefined
-      >;
-      const byPerson: Record<number, PersonTodoItem[]> = {};
-      this._config.persons.forEach((p, idx) => {
-        byPerson[idx] = this._todosOf(p)
-          .flatMap((id) => {
-            const items = payload?.[id]?.items;
-            if (!Array.isArray(items)) return [];
-            return items
-              .filter((item) => item?.status !== "completed" && typeof item?.summary === "string")
-              .map((item) => ({
-                ...item,
-                entityId: id,
-                listLabel: this._todoLabel(id),
-              }));
-          })
-          .sort((a, b) => this._todoSortKey(a) - this._todoSortKey(b) || a.summary.localeCompare(b.summary));
-      });
-      this._todos = byPerson;
-    } catch (_err) {
-      if (Object.keys(this._todos).length) this._todos = {};
-    }
   }
 
   /* ---- capabilities -------------------------------------------- */
@@ -1085,6 +1073,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
   }
   /** Small inline icon element for an event's calendar (or nothing). */
   private _calIconEl(e: BoardEvent) {
+    if (e.ref.kind === "todo") return nothing;
     const icon = this._calIcon(e.ref.calendar);
     return icon ? html`<ha-icon class="cicon" .icon=${icon}></ha-icon>` : nothing;
   }
@@ -1097,6 +1086,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
   }
   /** Color for an event respecting the color_by option. */
   private _eventColor(e: BoardEvent): string {
+    if (e.ref.kind === "todo") return e.color;
     const by = this._config.color_by;
     if (by === "location" && e.location) return hashColor(e.location);
     if (by === "calendar" && e.ref.calendar)
@@ -1111,6 +1101,62 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
     return this._events
       .filter((e) => e.day === day && this._isShared(e))
       .sort((a, b) => Number(b.allDay) - Number(a.allDay) || a.startMin - b.startMin);
+  }
+  private _todoAnchorDate(rangeStart: Date, rangeEnd: Date): Date {
+    const today = startOfDay(new Date());
+    if (today.getTime() >= rangeStart.getTime() && today.getTime() < rangeEnd.getTime()) return today;
+    return startOfDay(rangeStart);
+  }
+  private _todoToRawEvent(
+    item: TodoItem,
+    personIdx: number,
+    color: string,
+    entityId: string,
+    anchor: Date,
+    rangeStart: Date,
+    rangeEnd: Date,
+  ): RawEvent | null {
+    if (!item || typeof item.summary !== "string" || item.status === "completed") return null;
+    const rawDue = typeof item.due === "string" ? item.due.trim() : "";
+    const normalizedDue = rawDue.includes(" ") && !rawDue.includes("T") ? rawDue.replace(" ", "T") : rawDue;
+    const hasTime = normalizedDue.includes("T");
+    let start = startOfDay(anchor);
+    let end = new Date(start.getTime() + DAY_MS);
+    let allDay = true;
+    if (normalizedDue) {
+      if (hasTime) {
+        const due = new Date(normalizedDue);
+        if (isNaN(due.getTime())) return null;
+        start = due;
+        end = new Date(due.getTime() + Math.max(this._grid, 30) * 60000);
+        allDay = false;
+      } else {
+        const due = new Date(`${normalizedDue}T00:00:00`);
+        if (isNaN(due.getTime())) return null;
+        start = due;
+        end = new Date(due.getTime() + DAY_MS);
+      }
+    }
+    if (end.getTime() <= rangeStart.getTime() || start.getTime() >= rangeEnd.getTime()) return null;
+    return {
+      kind: "todo",
+      personIdx,
+      calendar: entityId,
+      uid: item.uid,
+      summary: item.summary.trim() || this._t("todo"),
+      description: item.description,
+      allDay,
+      start,
+      end,
+      color,
+      tentative: false,
+      todo_item: item.uid || item.summary,
+      todo_due: rawDue || undefined,
+      todo_due_has_time: normalizedDue ? hasTime : undefined,
+    };
+  }
+  private _isTodo(e: { ref: RawEvent }): boolean {
+    return e.ref.kind === "todo";
   }
   private _sharedAllDay(day: number): BoardEvent[] {
     return this._sharedFor(day).filter((e) => e.allDay);
@@ -1163,7 +1209,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
   /** Long, day-spanning events (e.g. OGS/Freispiel) shown as a faint full-width band. */
   private _isBackground(e: BoardEvent): boolean {
     const min = this._bgMinMin();
-    return min > 0 && !e.allDay && e.endMin - e.startMin >= min;
+    return min > 0 && !this._isTodo(e) && !e.allDay && e.endMin - e.startMin >= min;
   }
   /** Background-band segments for a person/day, longest first (so they stack cleanly). */
   private _bgFor(day: number, idx: number): BoardEvent[] {
@@ -1225,7 +1271,8 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
   }
   /** Display title, with "(day X/Y)" suffix for multi-day events. */
   private _evTitle(e: BoardEvent): string {
-    const base = e.parts && e.parts > 1 ? `${e.title} (${e.part}/${e.parts})` : e.title;
+    const base =
+      e.parts && e.parts > 1 ? `${e.title} (${e.part}/${e.parts})` : e.title;
     const icon = this._autoIcon(e.title);
     return icon ? `${icon} ${base}` : base;
   }
@@ -1310,78 +1357,8 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
       (this.hass.states[entityId]?.attributes?.friendly_name as string | undefined) ?? entityId
     );
   }
-  private _todoSortKey(item: TodoItem): number {
-    if (!item.due) return Number.MAX_SAFE_INTEGER;
-    const due = Date.parse(item.due);
-    return Number.isFinite(due) ? due : Number.MAX_SAFE_INTEGER;
-  }
-  private _formatTodoDue(due?: string): string {
-    if (!due) return "";
-    const parsed = new Date(due.includes("T") ? due : `${due}T00:00:00`);
-    if (isNaN(parsed.getTime())) return due;
-    const locale = this.hass.locale?.language || "en";
-    const withTime = due.includes("T");
-    return new Intl.DateTimeFormat(locale, {
-      day: "numeric",
-      month: "short",
-      ...(withTime ? { hour: "numeric", minute: "2-digit" } : {}),
-    }).format(parsed);
-  }
   private _todoRef(item: Pick<PersonTodoItem, "uid" | "summary">): string {
     return item.uid || item.summary;
-  }
-  private _todoKey(item: Pick<PersonTodoItem, "entityId" | "uid" | "summary">): string {
-    return `${item.entityId}::${this._todoRef(item)}`;
-  }
-  private _todoTitle(item: PersonTodoItem): string {
-    const extra = [
-      item.listLabel,
-      item.due ? `${this._t("todo_due")} ${this._formatTodoDue(item.due)}` : "",
-      item.description ?? "",
-    ]
-      .filter(Boolean)
-      .join("\n");
-    return extra ? `${item.summary}\n${extra}` : item.summary;
-  }
-  private _todoSummary(items: PersonTodoItem[]): string {
-    if (items.length === 0) return "";
-    return items.length === 1 ? `1 ${this._t("todo_item")}` : `${items.length} ${this._t("todo_items")}`;
-  }
-  private _todoChips(idx: number, compact: boolean = false) {
-    const items = this._todos[idx] ?? [];
-    if (items.length === 0) return nothing;
-    const visible = items.slice(0, compact ? 2 : 3);
-    const more = items.length - visible.length;
-    return html`<div class="ptodos ${compact ? "compact" : ""}">
-      ${visible.map(
-        (item) => html`<span class="ptodo">
-          <button
-            class="ptodo-check"
-            title=${this._t("todo_complete")}
-            ?disabled=${!this._canUpdateTodo(item.entityId) || this._todoBusy.includes(this._todoKey(item))}
-            @click=${(ev: MouseEvent) => {
-              ev.stopPropagation();
-              void this._toggleTodo(item);
-            }}
-          >
-            ${this._todoBusy.includes(this._todoKey(item)) ? "…" : "☐"}
-          </button>
-          <button
-            class="ptodo-label"
-            title=${this._todoTitle(item)}
-            @click=${(ev: MouseEvent) => {
-              ev.stopPropagation();
-              this._openTodo(item);
-            }}
-          >
-            ${item.summary}
-          </button>
-        </span>`,
-      )}
-      ${more > 0
-        ? html`<span class="ptodo more" title=${this._todoSummary(items)}>+${more}</span>`
-        : nothing}
-    </div>`;
   }
   private _openTodo(item: PersonTodoItem): void {
     const features = this._todoFeatures(item.entityId);
@@ -1392,11 +1369,11 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
       summary: item.summary,
       description: item.description ?? "",
       due: item.due
-        ? item.due.includes("T")
-          ? toLocalInput(new Date(item.due))
+        ? (item.due.includes("T") || item.due.includes(" "))
+          ? toLocalInput(new Date(item.due.replace(" ", "T")))
           : item.due
         : "",
-      dueHasTime: !!item.due && item.due.includes("T"),
+      dueHasTime: !!item.due && (item.due.includes("T") || item.due.includes(" ")),
       canUpdate: (features & FEAT_UPDATE) !== 0,
       canDelete: (features & FEAT_DELETE) !== 0,
       supportsDescription: (features & TODO_FEAT_DESCRIPTION) !== 0 || !!item.description,
@@ -1404,30 +1381,32 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
         (features & TODO_FEAT_DUE_DATE) !== 0 ||
         (features & TODO_FEAT_DUE_DATETIME) !== 0 ||
         !!item.due,
-      supportsDueDatetime: (features & TODO_FEAT_DUE_DATETIME) !== 0 || !!item.due?.includes("T"),
+      supportsDueDatetime:
+        (features & TODO_FEAT_DUE_DATETIME) !== 0 ||
+        !!item.due?.includes("T") ||
+        !!item.due?.includes(" "),
     };
   }
   private _todoDlgField<K extends keyof TodoDialogState>(key: K, value: TodoDialogState[K]): void {
     if (!this._todoDialog) return;
     this._todoDialog = { ...this._todoDialog, [key]: value, error: undefined };
   }
-  private async _toggleTodo(item: PersonTodoItem): Promise<void> {
-    if (!this._canUpdateTodo(item.entityId)) return;
-    const key = this._todoKey(item);
-    this._todoBusy = [...this._todoBusy, key];
+  private async _completeTodoDialog(): Promise<void> {
+    if (!this._todoDialog || !this._canUpdateTodo(this._todoDialog.entityId)) return;
+    const d = this._todoDialog;
+    this._todoDialog = { ...d, busy: true, error: undefined };
     try {
       await this.hass.callWS({
         type: "call_service",
         domain: "todo",
         service: "update_item",
-        target: { entity_id: item.entityId },
-        service_data: { item: this._todoRef(item), status: "completed" },
+        target: { entity_id: d.entityId },
+        service_data: { item: d.itemRef, status: "completed" },
       });
+      this._todoDialog = undefined;
       await this._refetch();
-    } catch (_e) {
-      // keep the item visible and reset its busy state; dialog errors cover edits
-    } finally {
-      this._todoBusy = this._todoBusy.filter((x) => x !== key);
+    } catch (e: any) {
+      this._todoDialog = { ...d, busy: false, error: e?.message || this._t("save_failed") };
     }
   }
   private async _saveTodoDialog(): Promise<void> {
@@ -1613,7 +1592,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
   private _focusFor(idx: number): { current?: RawEvent; next?: RawEvent } {
     const now = Date.now();
     const mine = this._raw
-      .filter((r) => r.personIdx === idx && !r.allDay)
+      .filter((r) => r.personIdx === idx && !r.allDay && r.kind !== "todo")
       .sort((a, b) => a.start.getTime() - b.start.getTime());
     const current = mine.find((r) => r.start.getTime() <= now && now < r.end.getTime());
     const next = mine.find((r) => r.start.getTime() > now);
@@ -1744,7 +1723,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                       <div class="pstatus">
                         ${stateObj ? this._statusLabel(stateObj.state) : ""}
                       </div>
-                      ${this._todoChips(i)} ${this._badges(p)}`}
+                      ${this._badges(p)}`}
               </div>
             `;
           })}
@@ -1759,8 +1738,6 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                         ${sharedAllDay.map((e) => {
                           const c = this._eventColor(e);
                           const tent = this._isTentative(e);
-                          const label =
-                            this._sharedCalendarIds().length > 1 ? `${this._calLabel(e.ref.calendar)} · ` : "";
                           return html`
                             <div
                               class="adchip shared ${tent ? "tentative" : ""}"
@@ -1773,7 +1750,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                               @click=${() => this._openEvent(e)}
                               @keydown=${(k: KeyboardEvent) => this._onItemKey(k, e)}
                             >
-                              ${label}${e.continuesBefore ? "« " : ""}${this._evTitle(e)}${e.continuesAfter
+                              ${e.continuesBefore ? "« " : ""}${this._evTitle(e)}${e.continuesAfter
                                 ? " »"
                                 : ""}
                             </div>
@@ -1790,10 +1767,10 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                             const tent = this._isTentative(e);
                             return html`
                               <div
-                                class="adchip ${tent ? "tentative" : ""}"
-                                style="border-left:3px ${tent
-                                  ? "dashed"
-                                  : "solid"} ${c};background:${c}30;background:color-mix(in srgb, ${c} 22%, var(--card-background-color, #fff))"
+                                class="adchip ${tent ? "tentative" : ""} ${this._isTodo(e) ? "todo" : ""}"
+                                style="${this._isTodo(e)
+                                  ? `border:2px solid ${c};background:color-mix(in srgb, ${c} 10%, var(--card-background-color, #fff))`
+                                  : `border-left:3px ${tent ? "dashed" : "solid"} ${c};background:${c}30;background:color-mix(in srgb, ${c} 22%, var(--card-background-color, #fff))`}"
                                 title="${this._evTitle(e)}"
                                 tabindex="0"
                                 role="button"
@@ -1917,7 +1894,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                         <div
                           class="event ${this._isPast(e) ? "past" : ""} ${tent
                             ? "tentative"
-                            : ""} ${slim ? "slim" : ""} ${canDrag ? "draggable" : ""} ${dragging
+                            : ""} ${this._isTodo(e) ? "todo" : ""} ${slim ? "slim" : ""} ${canDrag ? "draggable" : ""} ${dragging
                             ? "dragging"
                             : ""}"
                           tabindex="0"
@@ -1935,9 +1912,9 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                           @keydown=${(k: KeyboardEvent) => this._onItemKey(k, e)}
                           style="top:${top + 1.5}px;height:${h}px;
                                left:calc(${leftPct}% + 2px);width:calc(${widthPct}% - 4px);
-                               border-left:3px ${tent ? "dashed" : "solid"} ${c};
-                               background:${c}40;
-                               background:color-mix(in srgb, ${c} 32%, var(--card-background-color, #fff))"
+                               ${this._isTodo(e)
+                                 ? `border:2px solid ${c};background:color-mix(in srgb, ${c} 10%, var(--card-background-color, #fff));`
+                                 : `border-left:3px ${tent ? "dashed" : "solid"} ${c};background:${c}40;background:color-mix(in srgb, ${c} 32%, var(--card-background-color, #fff));`}"
                           title="${this._evTitle(e)} · ${formatMinutes(
                             this.hass,
                             e.startMin,
@@ -2188,7 +2165,6 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                   <div class="pmeta">
                     <div class="pname">${this._personName(p, i)}</div>
                     <div class="pstatus">${stateObj ? this._statusLabel(stateObj.state) : ""}</div>
-                    ${this._todoChips(i, true)}
                   </div>
                 </div>
                 <div
@@ -2211,7 +2187,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                       const after = e.continuesAfter || e.endMin > endMin;
                       return html`
                         <div
-                          class="tlbar ${this._isPast(e) ? "past" : ""} ${tent ? "tentative" : ""}"
+                          class="tlbar ${this._isPast(e) ? "past" : ""} ${tent ? "tentative" : ""} ${this._isTodo(e) ? "todo" : ""}"
                           tabindex="0"
                           role="button"
                           @click=${(ev: MouseEvent) => {
@@ -2221,9 +2197,9 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                           @keydown=${(k: KeyboardEvent) => this._onItemKey(k, e)}
                           style="left:${(s - startMin) * px + 1.5}px;width:${w}px;
                                  top:${e.col * LANE + 4}px;height:${LANE - 6}px;
-                                 border-left:3px ${tent ? "dashed" : "solid"} ${c};
-                                 background:${c}40;
-                                 background:color-mix(in srgb, ${c} 32%, var(--card-background-color, #fff))"
+                                 ${this._isTodo(e)
+                                   ? `border:2px solid ${c};background:color-mix(in srgb, ${c} 10%, var(--card-background-color, #fff));`
+                                   : `border-left:3px ${tent ? "dashed" : "solid"} ${c};background:${c}40;background:color-mix(in srgb, ${c} 32%, var(--card-background-color, #fff));`}"
                           title="${this._evTitle(e)}${e.allDay
                             ? ` · ${this._t("all_day")}`
                             : ` · ${formatMinutes(this.hass, e.startMin)}–${formatMinutes(this.hass, e.endMin)}`}"
@@ -2312,7 +2288,6 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                 }}
               >
                 ${this._avatar(p, i)}<span>${this._personName(p, i)}</span>
-                ${this._todoChips(i, true)}
               </div>`,
           )}
           ${this._visibleDays.map(
@@ -2392,10 +2367,10 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                         const tent = this._isTentative(e);
                         return html`
                           <div
-                            class="wchip ${this._isPast(e) ? "past" : ""} ${tent ? "tentative" : ""}"
-                            style="border-left:2.5px ${tent
-                              ? "dashed"
-                              : "solid"} ${c};background:${c}30;background:color-mix(in srgb, ${c} 22%, var(--card-background-color, #fff))"
+                            class="wchip ${this._isPast(e) ? "past" : ""} ${tent ? "tentative" : ""} ${this._isTodo(e) ? "todo" : ""}"
+                            style="${this._isTodo(e)
+                              ? `border:2px solid ${c};background:color-mix(in srgb, ${c} 10%, var(--card-background-color, #fff))`
+                              : `border-left:2.5px ${tent ? "dashed" : "solid"} ${c};background:${c}30;background:color-mix(in srgb, ${c} 22%, var(--card-background-color, #fff))`}"
                             title="${this._evTitle(e)}"
                             tabindex="0"
                             role="button"
@@ -2492,7 +2467,8 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
       <div
         class="agenda-row ${this._isPast(e) ? "past" : ""} ${current ? "current" : ""} ${tent
           ? "tentative"
-          : ""} ${this._isShared(e) ? "shared" : ""}"
+          : ""} ${this._isShared(e) ? "shared" : ""} ${this._isTodo(e) ? "todo" : ""}"
+        style="${this._isTodo(e) ? `box-shadow:inset 0 0 0 2px ${c};border-radius:8px;` : ""}"
         tabindex="0"
         role="button"
         @click=${() => this._openEvent(e)}
@@ -2584,10 +2560,10 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                     return html`<div
                       class="mchip ${this._isPast(e) ? "past" : ""} ${tent ? "tentative" : ""} ${this._isShared(e)
                         ? "shared"
-                        : ""}"
-                      style="background:${col}30;background:color-mix(in srgb, ${col} 22%, var(--card-background-color, #fff));border-left:2px ${tent
-                        ? "dashed"
-                        : "solid"} ${col}"
+                        : ""} ${this._isTodo(e) ? "todo" : ""}"
+                      style="${this._isTodo(e)
+                        ? `background:color-mix(in srgb, ${col} 10%, var(--card-background-color, #fff));box-shadow:inset 0 0 0 2px ${col}`
+                        : `background:${col}30;background:color-mix(in srgb, ${col} 22%, var(--card-background-color, #fff));border-left:2px ${tent ? "dashed" : "solid"} ${col}`}"
                       title="${this._eventOwnerLabel(e)} · ${this._evTitle(e)}"
                       @click=${(ev: MouseEvent) => {
                         ev.stopPropagation();
@@ -2663,6 +2639,18 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
 
   private _openEvent(e: BoardEvent): void {
     const raw: RawEvent = e.ref;
+    if (raw.kind === "todo") {
+      this._openTodo({
+        entityId: raw.calendar,
+        uid: raw.uid,
+        summary: raw.summary,
+        status: "needs_action",
+        due: raw.todo_due,
+        description: raw.description,
+        listLabel: this._todoLabel(raw.calendar),
+      });
+      return;
+    }
     const cal = raw.calendar;
     const canUpdate = this._canUpdate(cal) && !!raw.uid;
     const canDelete = this._canDelete(cal) && !!raw.uid;
@@ -2744,6 +2732,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
   private _draggable(e: BoardEvent): boolean {
     return (
       this._config.drag_drop !== false &&
+      !this._isTodo(e) &&
       !e.allDay &&
       !e.ref.rrule &&
       !!e.ref.uid &&
@@ -3094,6 +3083,11 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
             : nothing}
           ${d.error ? html`<div class="dlg-error">${d.error}</div>` : nothing}
           <div class="dlg-actions">
+            ${d.canUpdate
+              ? html`<button class="ghost" ?disabled=${d.busy} @click=${this._completeTodoDialog}>
+                  ${this._t("todo_complete")}
+                </button>`
+              : nothing}
             ${d.canDelete
               ? html`<button class="danger" ?disabled=${d.busy} @click=${this._deleteTodoDialog}>
                   ${this._t("delete")}

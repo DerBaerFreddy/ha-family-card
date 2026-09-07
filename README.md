@@ -32,7 +32,7 @@ Ein Familienkalender bzw. „Wer ist wann wo"-Board für [Home Assistant](https:
 - **Füllt den Bildschirm** – Personenspalten wachsen mit der Kartenbreite mit (Panel-Ansicht/breite Karten); mit `full_height` reicht das Board bis zum unteren Bildschirmrand. Spaltenbreite, Achsenbreite und Abstände sind einstellbar.
 - **Vorläufige Termine** – Termine, deren Titel ein `tentative_patterns`-Muster enthält, werden gestrichelt und leicht transparent dargestellt (opt-in; der Kalender-Status wird bewusst nicht ausgewertet).
 - **Entitäts-Badges pro Person** – beliebige Entitäten (Handy-Akku, Sensoren …) als kleine Chips unter dem Personenkopf; Klick öffnet den More-Info-Dialog.
-- **To-dos pro Person** – offene Einträge aus einer oder mehreren `todo.*`-Listen werden direkt unter dem Personenkopf angezeigt; per Checkbox abhaken, per Klick bearbeiten/löschen.
+- **To-dos pro Person** – offene Einträge aus einer oder mehreren `todo.*`-Listen erscheinen direkt im Kalender: mit Uhrzeit als markierte Termine, ohne Uhrzeit im Bereich **Ganztägig**. Per Klick lassen sie sich bearbeiten, löschen oder als erledigt markieren.
 - **Gemeinsame Kalender automatisch nur einmal** – wenn derselbe `calendar.*`-Eintrag bei mehreren Personen hinterlegt ist, wird er automatisch als gemeinsamer Termin statt doppelt pro Person dargestellt.
 - **Kiosk-Modus** – optional nach X Minuten Inaktivität automatisch zurück zur Startansicht und zu „heute"; größere Touch-Ziele auf Touch-Geräten.
 - **Visueller Editor 2.0** – komplett ohne YAML: Erststart-Assistent, Ein-Klick-Profile (🖥️ Wandtablet / 📱 Handy / 🧩 Standard), aufklappbare Themen-Gruppen mit Hilfetexten, Farbpaletten-Wähler pro Person **und pro Kalender** (inkl. Label), Feintuning-Regler (Schriftgröße, Ecken-Radius, Deckkraft) – Felder erscheinen nur, wenn die zugehörige Ansicht aktiv ist.
@@ -86,7 +86,7 @@ persons:
   - name: Anna
     person: person.anna       # Avatar (entity_picture) + Live-Status
     calendar: calendar.anna   # Quelle der Termine
-    todo: todo.anna           # optional: offene To-dos unter dem Personenkopf
+    todo: todo.anna           # optional: offene To-dos direkt im Kalender anzeigen
     color: '#8B7CF6'          # optional, sonst Default-Palette
   - name: Ben
     person: person.ben
