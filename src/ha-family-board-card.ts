@@ -872,15 +872,19 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
           string,
           { items?: TodoItem[] } | undefined
         >;
-        const anchor = this._todoAnchorDate(start, end);
+        const anchors = this._todoAnchorDates(start, end);
         this._config.persons.forEach((p, idx) => {
           const color = personColor(p, idx);
           this._todosOf(p).forEach((id) => {
             const items = payload?.[id]?.items;
             if (!Array.isArray(items)) return;
             items.forEach((item) => {
-              const raw = this._todoToRawEvent(item, idx, color, id, anchor, start, end);
-              if (raw) raws.push(raw);
+              const due = typeof item.due === "string" ? item.due.trim() : "";
+              const itemAnchors = due ? [anchors[0]] : anchors;
+              itemAnchors.forEach((anchor) => {
+                const raw = this._todoToRawEvent(item, idx, color, id, anchor, start, end);
+                if (raw) raws.push(raw);
+              });
             });
           });
         });
@@ -1103,10 +1107,14 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
       .filter((e) => e.day === day && this._isShared(e))
       .sort((a, b) => Number(b.allDay) - Number(a.allDay) || a.startMin - b.startMin);
   }
-  private _todoAnchorDate(rangeStart: Date, rangeEnd: Date): Date {
-    const today = startOfDay(new Date());
-    if (today.getTime() >= rangeStart.getTime() && today.getTime() < rangeEnd.getTime()) return today;
-    return startOfDay(rangeStart);
+  private _todoAnchorDates(rangeStart: Date, rangeEnd: Date): Date[] {
+    const dates: Date[] = [];
+    const cursor = startOfDay(rangeStart);
+    while (cursor.getTime() < rangeEnd.getTime()) {
+      dates.push(new Date(cursor));
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    return dates.length > 0 ? dates : [startOfDay(rangeStart)];
   }
   private _todoToRawEvent(
     item: TodoItem,
