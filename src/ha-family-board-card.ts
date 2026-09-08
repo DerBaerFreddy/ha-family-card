@@ -42,10 +42,24 @@ interface PersonConfig {
   hidden?: boolean; // start collapsed (person toggle can bring them back)
 }
 
+export interface SharedCalendarGroupConfig {
+  calendars: string | string[];
+  persons?: string[];
+  label?: string;
+}
+
+export interface SharedTodoGroupConfig {
+  todos: string | string[];
+  persons?: string[];
+  label?: string;
+}
+
 export interface FamilyBoardConfig extends LovelaceCardConfig {
   persons: PersonConfig[];
   shared_calendar?: string | string[]; // optional calendar(s) shown once across all person columns
   shared_todo?: string | string[]; // optional todo list(s) shown once across all person columns
+  shared_calendar_groups?: SharedCalendarGroupConfig[];
+  shared_todo_groups?: SharedTodoGroupConfig[];
   title?: string;
   view?: ViewName;
   views?: ViewName[]; // which views appear in the toggle. default: all
@@ -114,6 +128,12 @@ interface TodoItem {
 interface PersonTodoItem extends TodoItem {
   entityId: string;
   listLabel: string;
+}
+
+interface NormalizedSharedGroup {
+  ids: string[];
+  personIdxs: number[];
+  label?: string;
 }
 
 interface TodoDialogState {
@@ -697,14 +717,18 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
 
   private async _maybeFetch(): Promise<void> {
     const cals = this._config.persons.map((p) => this._calsOf(p).join("+")).join(",");
-    const shared = this._sharedCals().join("+");
-    const sharedTodos = this._sharedTodos().join("+");
+    const shared = this._sharedCalendarGroups()
+      .map((g) => `${g.ids.join("+")}@${g.personIdxs.join(".")}:${g.label ?? ""}`)
+      .join(",");
+    const sharedTodos = this._sharedTodoGroups()
+      .map((g) => `${g.ids.join("+")}@${g.personIdxs.join(".")}:${g.label ?? ""}`)
+      .join(",");
     const todos = [
       ...this._config.persons.map((p) => this._todosOf(p).join("+")),
-      this._sharedTodos().join("+"),
+      ...this._sharedTodoGroups().map((g) => g.ids.join("+")),
     ].join(",");
     const todoState = Array.from(
-      new Set([...this._config.persons.flatMap((p) => this._todosOf(p)), ...this._sharedTodos()]),
+      new Set([...this._config.persons.flatMap((p) => this._todosOf(p)), ...this._sharedTodoIds()]),
     )
       .map((id) => {
         const st = this.hass.states[id];
@@ -833,6 +857,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
       idx: number,
       color: string,
       shared: boolean = false,
+      group?: NormalizedSharedGroup,
     ): Promise<void> => {
       try {
         const events = await this.hass.callApi<any[]>(
@@ -849,6 +874,11 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
               const alt = (ev as Record<string, unknown>)[tf];
               if (typeof alt === "string" && alt.trim()) raw.summary = alt.trim();
             }
+            if (shared && group) {
+              raw.shared_person_idxs = group.personIdxs;
+              raw.shared_label =
+                group.label || (group.ids.length === 1 ? this._calLabel(group.ids[0]) : undefined);
+            }
           }
           if (raw && !this._hidden(raw.summary) && this._allowed(raw.summary)) {
             if (this._matchesTentative(raw.summary)) raw.tentative = true;
@@ -861,7 +891,8 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
       }
     };
 
-    const sharedIds = this._sharedCalendarIds();
+    const sharedCalendarGroups = this._sharedCalendarGroups();
+    const sharedIds = Array.from(new Set(sharedCalendarGroups.flatMap((g) => g.ids)));
     await Promise.all([
       ...this._config.persons.flatMap((p, idx) => {
         const color = personColor(p, idx);
@@ -869,13 +900,23 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
           .filter((cal) => this.hass.states[cal] && !sharedIds.includes(cal))
           .map((cal) => fetchCalendar(cal, idx, color));
       }),
-      ...sharedIds
-        .filter((cal) => this.hass.states[cal])
-        .map((cal) =>
-          fetchCalendar(cal, SHARED_PERSON_IDX, this._calMeta(cal).color ?? hashColor(cal), true),
+      ...sharedCalendarGroups.flatMap((group) =>
+        group.ids
+          .filter((cal) => this.hass.states[cal])
+          .map((cal) =>
+            fetchCalendar(
+              cal,
+              SHARED_PERSON_IDX,
+              this._calMeta(cal).color ?? hashColor(cal),
+              true,
+              group,
+            ),
+          ),
         ),
+      ),
     ]);
-    const sharedTodoIds = this._sharedTodoIds();
+    const sharedTodoGroups = this._sharedTodoGroups();
+    const sharedTodoIds = Array.from(new Set(sharedTodoGroups.flatMap((g) => g.ids)));
     const todoIds = Array.from(
       new Set([...this._config.persons.flatMap((p) => this._todosOf(p)), ...sharedTodoIds]),
     );
@@ -915,13 +956,20 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
           color: string,
           id: string,
           shared = false,
+          group?: NormalizedSharedGroup,
         ) => {
           items.forEach((item) => {
             const due = typeof item.due === "string" ? item.due.trim() : "";
             const itemAnchors = due ? [anchors[0]] : anchors;
             itemAnchors.forEach((anchor) => {
               const raw = this._todoToRawEvent(item, idx, color, id, anchor, start, end, shared);
-              if (raw) raws.push(raw);
+              if (!raw) return;
+              if (shared && group) {
+                raw.shared_person_idxs = group.personIdxs;
+                raw.shared_label =
+                  group.label || (group.ids.length === 1 ? this._todoLabel(group.ids[0]) : undefined);
+              }
+              raws.push(raw);
             });
           });
         };
@@ -936,11 +984,13 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
               pushTodoEvents(items, idx, color, id);
             });
         });
-        sharedTodoIds.forEach((id) => {
-          const items = payload?.[id]?.items;
-          if (!Array.isArray(items)) return;
-          pushTodoItems(this._todoOwnerKey(SHARED_PERSON_IDX), items, id);
-          pushTodoEvents(items, SHARED_PERSON_IDX, hashColor(id), id, true);
+        sharedTodoGroups.forEach((group) => {
+          group.ids.forEach((id) => {
+            const items = payload?.[id]?.items;
+            if (!Array.isArray(items)) return;
+            group.personIdxs.forEach((idx) => pushTodoItems(this._todoOwnerKey(idx), items, id));
+            pushTodoEvents(items, SHARED_PERSON_IDX, hashColor(id), id, true, group);
+          });
         });
       } catch (_err) {
         // Keep calendar events visible even if the todo service is unavailable.
@@ -978,44 +1028,10 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
     if (Array.isArray(p.calendar)) return p.calendar.filter(Boolean);
     return p.calendar ? [p.calendar] : [];
   }
-  /** Calendars that should be rendered once across all people. */
-  private _sharedCalendarIds(): string[] {
-    const ids: string[] = [];
-    this._sharedCals().forEach((id) => {
-      if (!ids.includes(id)) ids.push(id);
-    });
-    const counts = new Map<string, number>();
-    this._config.persons.forEach((p) => {
-      new Set(this._calsOf(p)).forEach((cal) => counts.set(cal, (counts.get(cal) ?? 0) + 1));
-    });
-    counts.forEach((count, cal) => {
-      if (count > 1 && !ids.includes(cal)) ids.push(cal);
-    });
-    return ids;
-  }
   /** A person's todo lists, normalized to a (possibly empty) array. */
   private _todosOf(p: PersonConfig): string[] {
     if (Array.isArray(p.todo)) return p.todo.filter(Boolean);
     return p.todo ? [p.todo] : [];
-  }
-  private _sharedTodos(): string[] {
-    const val = this._config.shared_todo;
-    if (Array.isArray(val)) return val.filter(Boolean);
-    return val ? [val] : [];
-  }
-  private _sharedTodoIds(): string[] {
-    const ids: string[] = [];
-    this._sharedTodos().forEach((id) => {
-      if (!ids.includes(id)) ids.push(id);
-    });
-    const counts = new Map<string, number>();
-    this._config.persons.forEach((p) => {
-      new Set(this._todosOf(p)).forEach((id) => counts.set(id, (counts.get(id) ?? 0) + 1));
-    });
-    counts.forEach((count, id) => {
-      if (count > 1 && !ids.includes(id)) ids.push(id);
-    });
-    return ids;
   }
   /** Calendars of a person that allow creating events. */
   private _writableCals(p: PersonConfig): string[] {
@@ -1050,21 +1066,151 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
   private _canDeleteTodo(entity?: string) {
     return (this._todoFeatures(entity) & FEAT_DELETE) !== 0;
   }
+  private _allPersonIdxs(): number[] {
+    return this._persons.map((_, idx) => idx);
+  }
+  private _personRef(p: PersonConfig, idx: number): string {
+    if (p.person) return p.person;
+    if (p.name) return `name:${p.name}`;
+    return `slot:${idx}`;
+  }
+  private _resolvePersonRefs(refs?: string[]): number[] {
+    if (!Array.isArray(refs) || refs.length === 0) return this._allPersonIdxs();
+    const resolved: number[] = [];
+    this._persons.forEach((p, idx) => {
+      const candidates = [this._personRef(p, idx), p.person, p.name ? `name:${p.name}` : "", String(idx)]
+        .filter((x): x is string => !!x);
+      if (refs.some((ref) => candidates.includes(ref)) && !resolved.includes(idx)) resolved.push(idx);
+    });
+    return resolved;
+  }
+  private _normalizeSharedGroups(
+    direct: string[],
+    grouped: Array<{ ids: string[]; persons?: string[]; label?: string }>,
+    duplicateSource: Array<{ id: string; owners: number[] }>,
+  ): NormalizedSharedGroup[] {
+    const groups: NormalizedSharedGroup[] = [];
+    const pushGroup = (ids: string[], personIdxs: number[], label?: string) => {
+      const cleanIds = Array.from(new Set(ids.filter(Boolean)));
+      const cleanPersons = Array.from(new Set(personIdxs)).sort((a, b) => a - b);
+      if (cleanIds.length === 0 || cleanPersons.length === 0) return;
+      groups.push({ ids: cleanIds, personIdxs: cleanPersons, label: label?.trim() || undefined });
+    };
+    if (direct.length) pushGroup(direct, this._allPersonIdxs());
+    grouped.forEach((g) => pushGroup(g.ids, this._resolvePersonRefs(g.persons), g.label));
+    duplicateSource.forEach(({ id, owners }) => {
+      if (owners.length < 2) return;
+      const alreadyCovered = groups.some(
+        (g) => g.ids.includes(id) && owners.every((idx) => g.personIdxs.includes(idx)),
+      );
+      if (!alreadyCovered) pushGroup([id], owners);
+    });
+    return groups;
+  }
   private _sharedCals(): string[] {
     const val = this._config.shared_calendar;
     if (Array.isArray(val)) return val.filter(Boolean);
     return val ? [val] : [];
   }
+  private _sharedCalendarGroups(): NormalizedSharedGroup[] {
+    const cfgGroups = Array.isArray(this._config.shared_calendar_groups)
+      ? this._config.shared_calendar_groups
+      : [];
+    const duplicateSource = new Map<string, number[]>();
+    this._config.persons.forEach((p, idx) => {
+      new Set(this._calsOf(p)).forEach((id) => {
+        const owners = duplicateSource.get(id) ?? [];
+        if (!owners.includes(idx)) owners.push(idx);
+        duplicateSource.set(id, owners);
+      });
+    });
+    return this._normalizeSharedGroups(
+      this._sharedCals(),
+      cfgGroups.map((g) => ({
+        ids: Array.isArray(g.calendars) ? g.calendars.filter(Boolean) : g.calendars ? [g.calendars] : [],
+        persons: g.persons,
+        label: g.label,
+      })),
+      Array.from(duplicateSource, ([id, owners]) => ({ id, owners })),
+    );
+  }
+  private _sharedTodos(): string[] {
+    const val = this._config.shared_todo;
+    if (Array.isArray(val)) return val.filter(Boolean);
+    return val ? [val] : [];
+  }
+  private _sharedTodoGroups(): NormalizedSharedGroup[] {
+    const cfgGroups = Array.isArray(this._config.shared_todo_groups) ? this._config.shared_todo_groups : [];
+    const duplicateSource = new Map<string, number[]>();
+    this._config.persons.forEach((p, idx) => {
+      new Set(this._todosOf(p)).forEach((id) => {
+        const owners = duplicateSource.get(id) ?? [];
+        if (!owners.includes(idx)) owners.push(idx);
+        duplicateSource.set(id, owners);
+      });
+    });
+    return this._normalizeSharedGroups(
+      this._sharedTodos(),
+      cfgGroups.map((g) => ({
+        ids: Array.isArray(g.todos) ? g.todos.filter(Boolean) : g.todos ? [g.todos] : [],
+        persons: g.persons,
+        label: g.label,
+      })),
+      Array.from(duplicateSource, ([id, owners]) => ({ id, owners })),
+    );
+  }
+  /** Calendars that should be rendered once across one or more people. */
+  private _sharedCalendarIds(): string[] {
+    return Array.from(new Set(this._sharedCalendarGroups().flatMap((g) => g.ids)));
+  }
+  private _sharedTodoIds(): string[] {
+    return Array.from(new Set(this._sharedTodoGroups().flatMap((g) => g.ids)));
+  }
+  private _sharedGroupFor(groups: NormalizedSharedGroup[], id: string): NormalizedSharedGroup | undefined {
+    return groups.find((g) => g.ids.includes(id));
+  }
   private _isShared(entry: { personIdx: number; shared?: boolean }): boolean {
     return entry.shared === true || entry.personIdx === SHARED_PERSON_IDX;
   }
-  private _sharedLabel(): string {
+  private _sharedPersons(entry: { ref: RawEvent }): number[] {
+    return entry.ref.shared_person_idxs?.length ? entry.ref.shared_person_idxs : this._allPersonIdxs();
+  }
+  private _sharedLabel(entry?: { ref: RawEvent }): string {
+    const label = entry?.ref.shared_label?.trim();
+    if (label) return label;
     const shared = this._sharedCalendarIds();
     return shared.length === 1 ? this._calLabel(shared[0]) : this._t("shared_events");
   }
-  private _sharedTodoLabel(): string {
-    const shared = this._sharedTodoIds();
-    return shared.length === 1 ? this._todoLabel(shared[0]) : this._t("shared_todos");
+  private _sharedRange(
+    entry: { ref: RawEvent },
+    visibleIdxs: number[] = this._allPersonIdxs(),
+  ): { start: number; span: number } | null {
+    const members = this._sharedPersons(entry).filter((idx) => visibleIdxs.includes(idx));
+    if (members.length === 0) return null;
+    const positions = members
+      .map((idx) => visibleIdxs.indexOf(idx))
+      .filter((pos) => pos >= 0)
+      .sort((a, b) => a - b);
+    if (!positions.length) return null;
+    const start = positions[0];
+    const end = positions[positions.length - 1];
+    return { start, span: end - start + 1 };
+  }
+  private _sharedGridStyle(
+    entry: { ref: RawEvent },
+    visibleIdxs: number[] = this._allPersonIdxs(),
+  ): string {
+    const range = this._sharedRange(entry, visibleIdxs);
+    if (!range) return "display:none";
+    return `grid-column:${range.start + 1} / span ${range.span}`;
+  }
+  private _sharedBandStyle(e: LaidOutEvent, px: number, startMin: number): string | null {
+    const range = this._sharedRange(e);
+    if (!range) return null;
+    const { top, height: bandHeight } = this._sharedBandBox(e, px, startMin);
+    const leftPct = (range.start / this._persons.length) * 100;
+    const widthPct = (range.span / this._persons.length) * 100;
+    return `top:${top + 1.5}px;height:${bandHeight}px;left:calc(var(--fb-axis-width, 56px) + ${leftPct}% + 2px);width:calc(${widthPct}% - 4px)`;
   }
 
   /* ---- helpers ------------------------------------------------- */
@@ -1443,9 +1589,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
   }
   private _eventOwnerLabel(e: BoardEvent): string {
     return this._isShared(e)
-      ? this._sharedCalendarIds().length === 1
-        ? this._sharedLabel()
-        : this._calLabel(e.ref.calendar)
+      ? this._sharedLabel(e)
       : this._personName(this._persons[e.personIdx], e.personIdx);
   }
   private _personName(p: PersonConfig, idx: number): string {
@@ -1465,14 +1609,10 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
     const due = typeof item.due === "string" ? item.due.trim() : "";
     return `${due || "9999-12-31T23:59:59"}::${item.summary.toLowerCase()}`;
   }
-  private _sharedTodoItems(): PersonTodoItem[] {
-    return this._todoItemsByOwner[this._todoOwnerKey(SHARED_PERSON_IDX)] ?? [];
-  }
   private _todoItemsForPerson(idx: number): PersonTodoItem[] {
-    return [
-      ...(this._todoItemsByOwner[this._todoOwnerKey(idx)] ?? []),
-      ...this._sharedTodoItems(),
-    ].sort((a, b) => this._todoSortKey(a).localeCompare(this._todoSortKey(b)));
+    return [...(this._todoItemsByOwner[this._todoOwnerKey(idx)] ?? [])].sort((a, b) =>
+      this._todoSortKey(a).localeCompare(this._todoSortKey(b)),
+    );
   }
   private _todoCountForPerson(idx: number): number {
     return this._todoItemsForPerson(idx).length;
@@ -1987,7 +2127,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                           return html`
                             <div
                               class="adchip shared ${tent ? "tentative" : ""}"
-                              style="border-left:3px ${tent
+                              style="${this._sharedGridStyle(e)};border-left:3px ${tent
                                 ? "dashed"
                                 : "solid"} ${c};background:${c}30;background:color-mix(in srgb, ${c} 22%, var(--card-background-color, #fff))"
                               title="${this._evTitle(e)}"
@@ -2249,7 +2389,9 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
           ${sharedTimed
             .filter((e) => e.endMin > startMin && e.startMin < endMin)
             .map((e) => {
-              const { top, height: bandHeight } = this._sharedBandBox(e, px, startMin);
+              const bandStyle = this._sharedBandStyle(e, px, startMin);
+              if (!bandStyle) return nothing;
+              const { height: bandHeight } = this._sharedBandBox(e, px, startMin);
               const c = this._eventColor(e);
               const tent = this._isTentative(e);
               return html`
@@ -2262,7 +2404,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                     this._openEvent(e);
                   }}
                   @keydown=${(k: KeyboardEvent) => this._onItemKey(k, e)}
-                  style="top:${top + 1.5}px;height:${bandHeight}px;
+                  style="${bandStyle};
                          border-left:3px ${tent ? "dashed" : "solid"} ${c};
                          background:${c}1f;
                          background:color-mix(in srgb, ${c} 14%, var(--card-background-color, #fff))"
@@ -2271,7 +2413,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                     e.startMin,
                   )}–${formatMinutes(this.hass, e.endMin)}"
                 >
-                  <span class="shared-tag">${this._sharedLabel()}</span>
+                  <span class="shared-tag">${this._sharedLabel(e)}</span>
                   <span class="etitle"
                     >${e.continuesBefore ? "« " : ""}${this._calIconEl(e)}${this._evTitle(
                       e,
@@ -2310,6 +2452,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
     const width = (endMin - startMin) * px;
     const full = weekdayNames(this.hass, "long", this._firstDayJs);
     const shared = this._sharedTimed(day);
+    const visiblePersonIdxs = this._persons.map((_, idx) => idx).filter((idx) => !this._isOff(idx));
     const hours: number[] = [];
     for (let h = startMin / 60; h <= endMin / 60; h++) hours.push(h);
     const now = new Date();
@@ -2351,7 +2494,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                 <div class="tlrow shared">
                   <div class="tlperson shared">
                     <div>
-                      <div class="pname">${this._sharedLabel()}</div>
+                      <div class="pname">${this._t("shared_events")}</div>
                     </div>
                   </div>
                   <div
@@ -2372,6 +2515,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                         const tent = this._isTentative(e);
                         const before = e.continuesBefore || e.startMin < startMin;
                         const after = e.continuesAfter || e.endMin > endMin;
+                        if (!this._sharedRange(e, visiblePersonIdxs)) return nothing;
                         return html`
                           <div
                             class="tlbar shared ${this._isPast(e) ? "past" : ""} ${tent
@@ -2393,7 +2537,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                               ? ` · ${this._t("all_day")}`
                               : ` · ${formatMinutes(this.hass, e.startMin)}–${formatMinutes(this.hass, e.endMin)}`}"
                           >
-                            <span class="shared-tag">${this._sharedLabel()}</span>
+                            <span class="shared-tag">${this._sharedLabel(e)}</span>
                             <span class="etitle"
                               >${before ? "« " : ""}${this._calIconEl(e)}${this._evTitle(e)}${after
                                 ? " »"
@@ -2541,7 +2685,8 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
       .map((p, i) => ({ p, i }))
       .filter(
         ({ i }) =>
-          this._config.hide_empty_persons !== true || this._events.some((e) => e.personIdx === i),
+          this._config.hide_empty_persons !== true ||
+          this._events.some((e) => e.personIdx === i || (this._isShared(e) && this._sharedPersons(e).includes(i))),
       );
     const shown = people.length > 0 ? people : this._persons.map((p, i) => ({ p, i }));
     const cols = `70px repeat(${shown.length}, minmax(110px, 1fr))`;
@@ -2573,6 +2718,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
           )}
           ${this._visibleDays.map((d) => {
             const shared = this._sharedFor(d);
+            const shownIdxs = shown.map(({ i }) => i);
             return html`
               <div
                 class="wday ${this._isRealToday(d) ? "today" : ""}"
@@ -2595,12 +2741,14 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                       ${shared.map((e) => {
                         const c = this._eventColor(e);
                         const tent = this._isTentative(e);
+                        const sharedStyle = this._sharedGridStyle(e, shownIdxs);
+                        if (sharedStyle === "display:none") return nothing;
                         return html`
                           <div
                             class="wshared-chip ${this._isPast(e) ? "past" : ""} ${tent
                               ? "tentative"
                               : ""}"
-                            style="border-left:2.5px ${tent
+                            style="${sharedStyle};border-left:2.5px ${tent
                               ? "dashed"
                               : "solid"} ${c};background:${c}28;background:color-mix(in srgb, ${c} 18%, var(--card-background-color, #fff))"
                             title="${this._evTitle(e)}"
@@ -2612,7 +2760,7 @@ export class FamilyBoardCard extends LitElement implements LovelaceCard {
                             }}
                             @keydown=${(k: KeyboardEvent) => this._onItemKey(k, e)}
                           >
-                            <span class="shared-tag">${this._sharedLabel()}</span>
+                            <span class="shared-tag">${this._sharedLabel(e)}</span>
                             <span
                               >${this._calIconEl(e)}${e.continuesBefore ? "« " : ""}${this._evTitle(
                                 e,

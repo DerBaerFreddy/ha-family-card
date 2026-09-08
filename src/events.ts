@@ -39,6 +39,8 @@ export interface RawEvent {
   kind?: "calendar" | "todo";
   personIdx: number;
   shared?: boolean;
+  shared_person_idxs?: number[];
+  shared_label?: string;
   calendar: string;
   uid?: string;
   recurrence_id?: string;
