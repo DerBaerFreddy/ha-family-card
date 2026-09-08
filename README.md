@@ -32,7 +32,7 @@ Ein Familienkalender bzw. „Wer ist wann wo"-Board für [Home Assistant](https:
 - **Füllt den Bildschirm** – Personenspalten wachsen mit der Kartenbreite mit (Panel-Ansicht/breite Karten); mit `full_height` reicht das Board bis zum unteren Bildschirmrand. Spaltenbreite, Achsenbreite und Abstände sind einstellbar.
 - **Vorläufige Termine** – Termine, deren Titel ein `tentative_patterns`-Muster enthält, werden gestrichelt und leicht transparent dargestellt (opt-in; der Kalender-Status wird bewusst nicht ausgewertet).
 - **Entitäts-Badges pro Person** – beliebige Entitäten (Handy-Akku, Sensoren …) als kleine Chips unter dem Personenkopf; Klick öffnet den More-Info-Dialog.
-- **To-dos pro Person** – offene Einträge aus einer oder mehreren `todo.*`-Listen erscheinen direkt im Kalender: mit Uhrzeit als Termine mit Abhak-Kästchen, ohne Uhrzeit im Bereich **Ganztägig** in einer eigenen **To-dos**-Untergruppe. Per Klick lassen sie sich bearbeiten oder löschen.
+- **To-dos pro Person** – offene Einträge aus einer oder mehreren `todo.*`-Listen erscheinen direkt im Kalender: in der Tagesansicht zusätzlich in einer eigenen **To-dos**-Zeile oben, mit Uhrzeit als Hinweis plus Termin mit Abhak-Kästchen. Per Klick lassen sie sich bearbeiten oder löschen.
 - **Gemeinsame Kalender automatisch nur einmal** – wenn derselbe `calendar.*`-Eintrag bei mehreren Personen hinterlegt ist, wird er automatisch als gemeinsamer Termin statt doppelt pro Person dargestellt.
 - **Kiosk-Modus** – optional nach X Minuten Inaktivität automatisch zurück zur Startansicht und zu „heute"; größere Touch-Ziele auf Touch-Geräten.
 - **Visueller Editor 2.0** – komplett ohne YAML: Erststart-Assistent, Ein-Klick-Profile (🖥️ Wandtablet / 📱 Handy / 🧩 Standard), aufklappbare Themen-Gruppen mit Hilfetexten, Farbpaletten-Wähler pro Person **und pro Kalender** (inkl. Label), Feintuning-Regler (Schriftgröße, Ecken-Radius, Deckkraft) – Felder erscheinen nur, wenn die zugehörige Ansicht aktiv ist.
@@ -104,7 +104,7 @@ persons:
 |-----------------|---------|---------|--------------|
 | `persons`       | Liste   | –       | 1–10 Personen mit `name`, `person`, `calendar` (String **oder Liste**), optional `todo` (String **oder Liste**), `color`, `badges` (Entitäten als Chips) und `hidden` (startet eingeklappt) |
 | `shared_calendar` | string/list | – | Ein oder mehrere gemeinsame `calendar.*`, deren Termine einmal über alle Personen dargestellt werden; in der gemeinsamen Leiste stehen auch zeitgebundene Termine mit Uhrzeit |
-| `shared_todo`   | string/list | – | Ein oder mehrere gemeinsame `todo.*`, deren offene Einträge einmal für alle dargestellt werden; zeitgebundene To-dos erscheinen zusätzlich oben als Hinweis im To-do-Bereich |
+| `shared_todo`   | string/list | – | Ein oder mehrere gemeinsame `todo.*`, deren offene Einträge einmal für alle gelten; sie werden auf dem Badge jeder Person mitgezählt und lassen sich dort in einem kompakten Fenster öffnen |
 | `hide_empty_persons` | boolean | `false` | Wochenansicht: Personen ohne Termine in der Woche ausblenden |
 | `show_focus`    | boolean | `false` | „Jetzt / als Nächstes"-Leiste pro Person über den Ansichten |
 | `drag_drop`     | boolean | `true`  | Termine in der Tagesansicht per Ziehen verschieben / in der Dauer ändern (nur schreibbare Einzeltermine) |
